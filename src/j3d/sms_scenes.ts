@@ -9,8 +9,8 @@ import { readString, assert, assertExists } from '../util';
 
 import { J3DModelData, BMDModelMaterialData } from '../Common/JSYSTEM/J3D/J3DGraphBase';
 import { J3DModelInstanceSimple } from '../Common/JSYSTEM/J3D/J3DGraphSimple';
-import { lightSetWorldPosition, EFB_WIDTH, EFB_HEIGHT } from '../gx/gx_material';
-import { mat4, quat } from 'gl-matrix';
+import { Light, lightSetWorldPosition, EFB_WIDTH, EFB_HEIGHT } from '../gx/gx_material';
+import { mat4, quat, vec3 } from 'gl-matrix';
 import { LoopMode, BMD, BMT, BCK, BTK, BRK } from '../Common/JSYSTEM/J3D/J3DLoader';
 import { GXRenderHelperGfx, fillSceneParamsDataOnTemplate } from '../gx/gx_render';
 import { makeBackbufferDescSimple, makeAttachmentClearDescriptor, opaqueBlackFullClearRenderPassDescriptor, pushAntialiasingPostProcessPass } from '../gfx/helpers/RenderGraphHelpers';
@@ -22,6 +22,7 @@ import { createModelInstance } from './scenes';
 import { GfxrAttachmentSlot } from '../gfx/render/GfxRenderGraph';
 import { executeOnPass, hasAnyVisible } from '../gfx/render/GfxRenderInstManager';
 import { gfxDeviceNeedsFlipY } from '../gfx/helpers/GfxDeviceHelpers';
+import { transformVec3Mat4w1 } from '../MathHelpers';
 
 const sjisDecoder = new TextDecoder('sjis')!;
 
@@ -322,15 +323,44 @@ export class SunshineRenderer implements Viewer.SceneGfx {
             }
         }
     }
+    
+    private LARGE_NUMBER = -1048576.0;
+    private initSpecularDir(lit: Light, nx: number, ny: number, nz: number) {
+        // Compute half-angle vector
+        let hx  = -nx;
+        let hy  = -ny;
+        let hz  = (-nz + 1.0);
+	    let mag = ((hx * hx) + (hy * hy) + (hz * hz));
+	    if(mag!=0.0) mag = 1.0 / Math.sqrt(mag);
 
+        hx *= mag;
+        hy *= mag;
+        hz *= mag;
+
+        const px  = (nx * this.LARGE_NUMBER);
+        const py  = (ny * this.LARGE_NUMBER);
+        const pz  = (nz * this.LARGE_NUMBER);
+        
+        vec3.set(lit.Position, px, py, pz);
+        vec3.set(lit.Direction, hx, hy, hz);
+    }
+
+    private scratchVec3 = vec3.create();
     protected prepareToRender(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
         const template = this.renderHelper.pushTemplateRenderInst();
         fillSceneParamsDataOnTemplate(template, viewerInput);
         if (this.objectsLightIndex !== -1) {
             const objectsLight = this.lightAry.children[this.objectsLightIndex] as SceneBinObjLight;
             for (let i = 0; i < this.modelInstances.length; i++) {
-                const gxLight = this.modelInstances[i].getGXLightReference(0);
-                lightSetWorldPosition(gxLight, viewerInput.camera, objectsLight.x, objectsLight.y, objectsLight.z);
+                const gxLightDiffuse = this.modelInstances[i].getGXLightReference(0);
+                lightSetWorldPosition(gxLightDiffuse, viewerInput.camera, objectsLight.x, objectsLight.y, objectsLight.z);
+                
+                const gxLightSpecular = this.modelInstances[i].getGXLightReference(2);
+                const v = this.scratchVec3;
+                vec3.set(v, objectsLight.x, objectsLight.y, objectsLight.z);
+                transformVec3Mat4w1(v, viewerInput.camera.viewMatrix, v);
+                vec3.normalize(v, v);
+                this.initSpecularDir(gxLightSpecular, -v[0], -v[1], -v[2]);
             }
         }
         for (let i = 0; i < this.modelInstances.length; i++)
@@ -645,8 +675,14 @@ export class SunshineSceneDesc implements Viewer.SceneDesc {
 
         if (renderer.objectsLightIndex !== -1) {
             const objectsLight = renderer.lightAry.children[renderer.objectsLightIndex] as SceneBinObjLight;
-            const gxLight = scene.getGXLightReference(0);
-            colorFromRGBA(gxLight.Color, objectsLight.r/255, objectsLight.g/255, objectsLight.b/255, objectsLight.a/255);
+            const gxLightDiffuse = scene.getGXLightReference(0);
+            colorFromRGBA(gxLightDiffuse.Color, objectsLight.r/255, objectsLight.g/255, objectsLight.b/255, objectsLight.a/255);
+            vec3.set(gxLightDiffuse.CosAtten, 1.0, 0.0, 0.0);
+            vec3.set(gxLightDiffuse.DistAtten, 1.0, 0.0, 0.0);
+            const gxLightSpecular = scene.getGXLightReference(2);
+            colorFromRGBA(gxLightSpecular.Color, objectsLight.r/255, objectsLight.g/255, objectsLight.b/255, objectsLight.a/255);
+            vec3.set(gxLightSpecular.CosAtten, 0.0, 0.0, 1.0);
+            vec3.set(gxLightSpecular.DistAtten, 0.5*objectsLight.intensity, 0.0, 1.0 - 0.5*objectsLight.intensity);
         }
         if (this.objectsAmbIndex !== -1 && scene.modelMaterialData.materialData !== null) {
             const ambColor = this.ambAry.children[this.objectsAmbIndex] as SceneBinObjAmbColor;
