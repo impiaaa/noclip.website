@@ -3,7 +3,7 @@
 
 import * as Viewer from './viewer';
 import { assertExists, assert } from './util';
-import { CameraControllerClass, OrbitCameraController, FPSCameraController, OrthoCameraController } from './Camera';
+import { CameraControllerClass, OrbitCameraController, FPSCameraController, OrthoCameraController, GameSyncCameraController } from './Camera';
 import { Color, colorToCSS } from './Color';
 import { GITHUB_REVISION_URL, GITHUB_URL, GIT_SHORT_REVISION, IS_DEVELOPMENT } from './BuildVersion';
 import { SaveManager, GlobalSaveManager } from "./SaveManager";
@@ -1568,7 +1568,7 @@ export class RadioButtons implements Widget {
 
 class ViewerSettings extends Panel {
     private fovSlider: Slider;
-    private camControllerClasses: CameraControllerClass[] = [FPSCameraController, OrbitCameraController, OrthoCameraController];
+    private camControllerClasses: CameraControllerClass[] = [FPSCameraController, OrbitCameraController, OrthoCameraController, GameSyncCameraController];
     private camRadioButtons: RadioButtons;
     private camSpeedSlider: Slider;
     private invertYCheckbox: Checkbox;
@@ -1631,8 +1631,7 @@ class ViewerSettings extends Panel {
     }
 
     public setCameraControllerIndex(idx: number) {
-        const index = this.camRadioButtons.selectedIndex;
-        const cameraControllerClass = this.camControllerClasses[index];
+        const cameraControllerClass = this.camControllerClasses[idx];
         this.setCameraControllerClass(cameraControllerClass);
     }
 
