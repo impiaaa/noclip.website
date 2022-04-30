@@ -2,7 +2,7 @@
 import { mat4, vec3, vec4, quat, ReadonlyVec3, ReadonlyMat4, ReadonlyVec4 } from 'gl-matrix';
 import InputManager from './InputManager';
 import { Frustum, AABB } from './Geometry';
-import { clampRange, projectionMatrixForFrustum, computeUnitSphericalCoordinates, projectionMatrixForCuboid, lerpAngle, MathConstants, getMatrixAxisY, transformVec3Mat4w1, Vec3Zero, Vec3UnitY, Vec3UnitX, Vec3UnitZ, transformVec3Mat4w0, getMatrixAxisZ, getMatrixAxisX, computeEulerAngleRotationFromSRTMatrix } from './MathHelpers';
+import { bitsAsFloat32, clampRange, projectionMatrixForFrustum, computeUnitSphericalCoordinates, projectionMatrixForCuboid, lerpAngle, MathConstants, getMatrixAxisY, transformVec3Mat4w1, Vec3Zero, Vec3UnitY, Vec3UnitX, Vec3UnitZ, transformVec3Mat4w0, getMatrixAxisZ, getMatrixAxisX, computeEulerAngleRotationFromSRTMatrix } from './MathHelpers';
 import { projectionMatrixConvertClipSpaceNearZ } from './gfx/helpers/ProjectionHelpers';
 import { WebXRContext } from './WebXR';
 import { assert } from './util';
@@ -1032,6 +1032,143 @@ export class OrthoCameraController implements CameraController {
         this.camera.worldMatrixUpdated();
 
         return updated ? CameraUpdateResult.Changed : CameraUpdateResult.Unchanged;
+    }
+}
+
+// Super Mario Sunshine
+//const gpCamera = "8040b370 "; // JP rev 0
+const gpCamera = "8040d0a8 "; // US
+
+const addrX = gpCamera+"124";
+const addrY = gpCamera+"128";
+const addrZ = gpCamera+"12c";
+const addrNear = gpCamera+"28";
+const addrFar = gpCamera+"2c";
+const addrUpX = gpCamera+"30";
+const addrUpY = gpCamera+"34";
+const addrUpZ = gpCamera+"38";
+const addrTargetX = gpCamera+"148";
+const addrTargetY = gpCamera+"14c";
+const addrTargetZ = gpCamera+"150";
+const addrFovY = gpCamera+"48";
+const addrAspect = gpCamera+"4c";
+
+export class GameSyncCameraController implements CameraController {
+    public camera: Camera;
+    public forceUpdate: boolean = false;
+    
+    private ws: WebSocket;
+    private updated: boolean = false;
+    private timer: number;
+    
+    private pos = vec3.create();
+    private near = 10;
+    private far = 30000;
+    private up = vec3.clone(Vec3UnitY);
+    private target = vec3.clone(Vec3UnitZ);
+    private fovY = 60;
+    private aspect = 1;
+    
+    constructor() {
+        this.connect();
+    }
+    
+    destructor() {
+        this.shutdown();
+    }
+    
+    private shutdown() {
+        console.log("Shutting down game connection");
+        clearTimeout(this.timer);
+        this.ws.close(4999);
+    }
+    
+    private connect() {
+        console.log("Opening game connection...");
+        this.ws = new WebSocket("ws://127.0.0.1:8081/ws");
+        this.ws.addEventListener('open', (event) => {
+            console.log("Connected to game");
+            this.ws.send(addrX+'\n'+
+                         addrY+'\n'+
+                         addrZ+'\n'+
+                         addrNear+'\n'+
+                         addrFar+'\n'+
+                         addrUpX+'\n'+
+                         addrUpY+'\n'+
+                         addrUpZ+'\n'+
+                         addrTargetX+'\n'+
+                         addrTargetY+'\n'+
+                         addrTargetZ+'\n'+
+                         addrFovY+'\n'+
+                         addrAspect);
+        });
+        this.ws.addEventListener('message', (event: MessageEvent) => {
+            if (typeof event.data !== "string") {
+                return;
+            }
+            let lines = event.data.trim().split('\n');
+            for (let i = 0; i < lines.length; i+=2) {
+                let addr = lines[i];
+                let val = bitsAsFloat32(parseInt(lines[i+1].replace(/[^0-9a-f]/gi, ''), 16));
+                switch (addr) {
+                    case addrX:       this.pos[0]    = val; break;
+                    case addrY:       this.pos[1]    = val; break;
+                    case addrZ:       this.pos[2]    = val; break;
+                    case addrNear:    this.near      = val; break;
+                    case addrFar:     this.far       = val; break;
+                    case addrUpX:     this.up[0]     = val; break;
+                    case addrUpY:     this.up[1]     = val; break;
+                    case addrUpZ:     this.up[2]     = val; break;
+                    case addrTargetX: this.target[0] = val; break;
+                    case addrTargetY: this.target[1] = val; break;
+                    case addrTargetZ: this.target[2] = val; break;
+                    case addrFovY:    this.fovY      = val; break;
+                    case addrAspect:  this.aspect    = val; break;
+                }
+            }
+            this.updated = true;
+        });
+        this.ws.addEventListener('close', (event: CloseEvent) => {
+            if (window.main.viewer.cameraController !== this) {
+                this.shutdown();
+                return;
+            }
+            if (event.code !== 4999) {
+                console.log("Game connection closed, reconnecting in 5 seconds");
+                this.timer = setTimeout(this.connect.bind(this), 5000);
+            }
+        });
+        this.ws.addEventListener('error', (event: Event) => {
+            console.log("Game sync error: "+event);
+        });
+    }
+
+    public cameraUpdateForced(): void {
+    }
+
+    public setSceneMoveSpeedMult(v: number): void {
+    }
+
+    public setKeyMoveSpeed(speed: number): void {
+    }
+
+    public getKeyMoveSpeed(): number | null {
+        return 0;
+    }
+
+    public update(inputManager: InputManager, dt: number): CameraUpdateResult {
+        this.camera.setPerspective(this.fovY*MathConstants.DEG_TO_RAD, this.aspect, this.near, this.far);
+        if (this.updated) {
+            this.updated = false;
+            this.camera.isOrthographic = false;
+            mat4.lookAt(this.camera.viewMatrix, this.pos, this.target, this.up);
+            mat4.invert(this.camera.worldMatrix, this.camera.viewMatrix);
+            this.camera.worldMatrixUpdated();
+            return CameraUpdateResult.Changed;
+        }
+        else {
+            return CameraUpdateResult.Unchanged;
+        }
     }
 }
 
