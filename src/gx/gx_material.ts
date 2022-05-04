@@ -455,7 +455,7 @@ export class GX_Program extends DeviceProgram {
 
         switch (diffFn) {
         case GX.DiffuseFunction.NONE: return `1.0`;
-        case GX.DiffuseFunction.SIGN: return `${NdotL}`;
+        case GX.DiffuseFunction.SIGN: return `1.0`;//`${NdotL}`;
         case GX.DiffuseFunction.CLAMP: return `max(${NdotL}, 0.0)`;
         }
     }
@@ -1498,6 +1498,7 @@ void main() {
     o_OutColor1 = vec4(0.0);
 }
 `;
+        if (this.material.name === '_mat_coin_normal') console.log(this.vert);
     }
 }
 // #endregion
