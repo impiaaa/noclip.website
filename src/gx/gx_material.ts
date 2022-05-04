@@ -461,12 +461,12 @@ export class GX_Program extends DeviceProgram {
             return `
     t_Attenuation = ${cosAttn} / ${distAttn};`;
         } else if (chan.attenuationFunction === GX.AttenuationFunction.SPEC) {
-            const attn = `(dot(t_Normal, t_LightDeltaDir) >= 0.0) ? max(0.0, dot(t_Normal, ${lightName}.Direction.xyz)) : 0.0`;
+            const attn = `(dot(t_Normal, normalize(t_LightDelta)) >= 0.0) ? max(0.0, dot(t_Normal, ${lightName}.Direction.xyz)) : 0.0`;
             const cosAttn = `ApplyAttenuation(${lightName}.CosAtten.xyz, t_Attenuation)`;
-            const distAttn = `ApplyAttenuation(${lightName}.DistAtten.xyz, t_Attenuation)`;
+            const distAttn = `ApplyAttenuation(${(chan.diffuseFunction == GX.DiffuseFunction.NONE) ? "normalize" : ""}(${lightName}.DistAtten.xyz), t_Attenuation)`;
             return `
     t_Attenuation = ${attn};
-    t_Attenuation = ${cosAttn} / ${distAttn};`;
+    t_Attenuation = max(0.0, ${cosAttn}) / ${distAttn};`;
         } else {
             throw "whoops";
         }
@@ -1457,7 +1457,6 @@ ${this.generateFog()}
 ${this.generateDstAlpha()}
     gl_FragColor = t_PixelOut;
 }`;
-
         // console.log(`vertex shader:\n${this.vert}\nfragment shader:\n${this.frag}`);
     }
 }

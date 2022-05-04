@@ -625,8 +625,9 @@ export class SunshineRenderer implements Viewer.SceneGfx {
             colorFromRGBA(gxLightDiffuse.Color, objectsLight.r/255, objectsLight.g/255, objectsLight.b/255, objectsLight.a/255);
             vec3.set(gxLightDiffuse.CosAtten, 1.0, 0.0, 0.0);
             vec3.set(gxLightDiffuse.DistAtten, 1.0, 0.0, 0.0);
+            
             const gxLightSpecular = modelInstance.getGXLightReference(2);
-            //colorFromRGBA(gxLightSpecular.Color, objectsLight.r/255, objectsLight.g/255, objectsLight.b/255, objectsLight.a/255);
+            colorFromRGBA(gxLightSpecular.Color, objectsLight.r/255, objectsLight.g/255, objectsLight.b/255, objectsLight.a/255);
             vec3.set(gxLightSpecular.CosAtten, 0.0, 0.0, 1.0);
             vec3.set(gxLightSpecular.DistAtten, 0.5*objectsLight.intensity, 0.0, 1.0 - 0.5*objectsLight.intensity);
         }
