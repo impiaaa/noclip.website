@@ -467,16 +467,18 @@ export class GX_Program extends DeviceProgram {
         } else if (chan.attenuationFunction === GX.AttenuationFunction.SPOT) {
             const attn = `max(0.0, dot(t_LightDeltaDir, ${lightName}.Direction.xyz))`;
             const cosAttn = `max(0.0, ApplyAttenuation(${lightName}.CosAtten.xyz, ${attn}))`;
-            const distAttn = `dot(${lightName}.DistAtten.xyz, vec3(1.0, t_LightDeltaDist, t_LightDeltaDist2))`;
+            const normalize = (chan.diffuseFunction !== GX.DiffuseFunction.NONE) ? `normalize` : ``;
+            const distAttn = `dot(${normalize}(${lightName}.DistAtten.xyz), vec3(1.0, t_LightDeltaDist, t_LightDeltaDist2))`;
             return `
-    t_Attenuation = ${cosAttn} / ${distAttn};`;
+    t_Attenuation = max(0.0, ${cosAttn} / ${distAttn});`;
         } else if (chan.attenuationFunction === GX.AttenuationFunction.SPEC) {
             const attn = `(dot(t_Normal, normalize(t_LightDelta)) >= 0.0) ? max(0.0, dot(t_Normal, ${lightName}.Direction.xyz)) : 0.0`;
             const cosAttn = `ApplyAttenuation(${lightName}.CosAtten.xyz, t_Attenuation)`;
-            const distAttn = `ApplyAttenuation(${(chan.diffuseFunction == GX.DiffuseFunction.NONE) ? "normalize" : ""}(${lightName}.DistAtten.xyz), t_Attenuation)`;
+            const normalize = (chan.diffuseFunction === GX.DiffuseFunction.NONE) ? `normalize` : ``;
+            const distAttn = `max(0.0, ApplyAttenuation(${normalize}(${lightName}.DistAtten.xyz), t_Attenuation))`;
             return `
     t_Attenuation = ${attn};
-    t_Attenuation = max(0.0, ${cosAttn}) / ${distAttn};`;
+    t_Attenuation = max(0.0, ${cosAttn} / ${distAttn});`;
         } else {
             throw "whoops";
         }
