@@ -1,17 +1,15 @@
-import { mat4, ReadonlyVec3, vec3 } from "gl-matrix";
-import * as GX_Material from '../gx/gx_material';
+
+import { ReadonlyVec3, vec3 } from "gl-matrix";
 import { Color, colorCopy, colorNewCopy, White } from '../Color';
-import { computeViewMatrix } from "../Camera";
-import { mat4SetTranslation } from "./util";
 import { SceneRenderContext } from "./render";
 import { ObjectInstance } from "./objects";
-import { drawWorldSpacePoint, getDebugOverlayCanvas2D } from "../DebugJunk";
 import { AABB } from "../Geometry";
+import { spliceBisectRight } from "../util";
+import { clamp, transformVec3Mat4w1 } from "../MathHelpers";
 
 const scratchVec0 = vec3.create();
 const scratchVec1 = vec3.create();
-const scratchMtx0 = mat4.create();
-const scratchMtx1 = mat4.create();
+const scratchVec2 = vec3.create();
 const scratchBox0 = new AABB();
 
 export const enum LightType {
@@ -35,10 +33,9 @@ export class Light {
     public probedInfluence: number = 0;
 
     public getPosition(dst: vec3) {
-        if (this.obj !== undefined) {
-            this.obj.getSRTForChildren(scratchMtx0);
-            vec3.transformMat4(dst, this.position, scratchMtx0);
-        } else
+        if (this.obj !== undefined)
+            transformVec3Mat4w1(dst, this.obj.getSRTForChildren(), this.position);
+        else
             vec3.copy(dst, this.position);
     }
 
@@ -74,17 +71,17 @@ export function createPointLight(position: ReadonlyVec3, color: Color, refDistan
 export function createDirectionalLight(direction: ReadonlyVec3, color: Color): Light {    const light = new Light();
     light.type = LightType.DIRECTIONAL;
     vec3.copy(light.direction, direction);
+    vec3.normalize(light.direction, light.direction);
     light.refDistance = 1000000.0; // TODO
     light.radius = 1000000.0; // TODO
     colorCopy(light.color, color);
     return light;
 }
 
-const lightPos: vec3 = vec3.create();
-
 export function calcLightInfluenceOnObject(light: Light, obj: ObjectInstance): number {
     const objPos = scratchVec0;
     const lightToObj = scratchVec1;
+    const lightPos = scratchVec2;
 
     obj.getPosition(objPos);
     light.getPosition(lightPos);
@@ -104,6 +101,13 @@ export function calcLightInfluenceOnObject(light: Light, obj: ObjectInstance): n
     return result;
 }
 
+function applyColorToInfluence(influence: number, color: Color): number {
+    const rInfluence = clamp(influence * color.r, 0, 1);
+    const gInfluence = clamp(influence * color.g, 0, 1);
+    const bInfluence = clamp(influence * color.b, 0, 1);
+    return Math.max(rInfluence, gInfluence, bInfluence);
+}
+
 export class WorldLights {
     public lights: Set<Light> = new Set();
 
@@ -115,25 +119,33 @@ export class WorldLights {
         this.lights.delete(light);
     }
 
-    public probeLightsOnObject(obj: ObjectInstance, sceneCtx: SceneRenderContext, typeMask: LightType): Light[] {
+    public probeLightsOnObject(obj: ObjectInstance, sceneCtx: SceneRenderContext, typeMask: LightType, maxLights: number): Light[] {
         const probedLights: Light[] = [];
-        for (let light of this.lights) {
-            if (light.type & typeMask) {
-                light.probedInfluence = calcLightInfluenceOnObject(light, obj);
-                // TODO: adjust influence for color
-                // light.getPosition(lightPos);
-                // const ctx = getDebugOverlayCanvas2D();
-                // drawWorldSpacePoint(ctx, sceneCtx.viewerInput.camera.clipFromWorldMatrix, lightPos);
-                probedLights.push(light);
-            }
-        }
 
-        probedLights.sort((a, b) => b.probedInfluence - a.probedInfluence);
+        for (let light of this.lights) {
+            if (!(light.type & typeMask))
+                continue;
+
+            if (light.type == LightType.DIRECTIONAL)
+                // Sun and moon get massive influence
+                light.probedInfluence = 1000.0;
+            else {
+                light.probedInfluence = calcLightInfluenceOnObject(light, obj);
+                light.probedInfluence = applyColorToInfluence(light.probedInfluence, light.color);
+                if (light.probedInfluence <= 0.0)
+                    continue;
+            }
+
+            spliceBisectRight(probedLights, light, (a, b) => b.probedInfluence - a.probedInfluence);
+
+            if (probedLights.length >= maxLights)
+                probedLights.pop();
+        }
 
         return probedLights;
     }
 
-    public probeLightsOnMapBox(aabb: AABB, typeMask: LightType): Light[] {
+    public probeLightsOnMapBox(aabb: AABB, typeMask: LightType, maxLights: number): Light[] {
         const center = scratchVec0;
         const lightPos = scratchVec1;
         const lightBox = scratchBox0;
@@ -141,21 +153,35 @@ export class WorldLights {
         aabb.centerPoint(center);
 
         const probedLights: Light[] = [];
-        for (let light of this.lights) {
-            if ((light.type & typeMask) && light.radius > 0 && light.affectsMap) {
-                light.getPosition(lightPos);
-                lightBox.set(lightPos[0] - light.radius, lightPos[1] - light.radius, lightPos[2] - light.radius,
-                    lightPos[0] + light.radius, lightPos[1] + light.radius, lightPos[2] + light.radius);
-                if (AABB.intersect(lightBox, aabb)) {
-                    const dist = vec3.dist(lightPos, center);
-                    // TODO: adjust influence for color
-                    light.probedInfluence = 1.0 / (light.distAtten[0] + light.distAtten[1] * dist + light.distAtten[2] * dist * dist);
-                    probedLights.push(light);
-                }
-            }
-        }
 
-        probedLights.sort((a, b) => b.probedInfluence - a.probedInfluence);
+        for (let light of this.lights) {
+            if (!(light.type & typeMask))
+                continue;
+            
+            if (!light.affectsMap)
+                continue;
+
+            if (light.radius <= 0)
+                continue;
+                
+            light.getPosition(lightPos);
+            lightBox.set(lightPos[0] - light.radius, lightPos[1] - light.radius, lightPos[2] - light.radius,
+                lightPos[0] + light.radius, lightPos[1] + light.radius, lightPos[2] + light.radius);
+            if (!AABB.intersect(lightBox, aabb))
+                continue;
+
+            const dist = vec3.dist(lightPos, center);
+
+            light.probedInfluence = 1.0 / (light.distAtten[0] + light.distAtten[1] * dist + light.distAtten[2] * dist * dist);
+            light.probedInfluence = applyColorToInfluence(light.probedInfluence, light.color);
+            if (light.probedInfluence <= 0.0)
+                continue;
+
+            spliceBisectRight(probedLights, light, (a, b) => b.probedInfluence - a.probedInfluence);
+
+            if (probedLights.length >= maxLights)
+                probedLights.pop();
+        }
 
         return probedLights;
     }

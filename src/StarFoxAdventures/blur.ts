@@ -1,5 +1,5 @@
 import { DeviceProgram } from "../Program";
-import { GfxShaderLibrary } from "../gfx/helpers/ShaderHelpers";
+import { GfxShaderLibrary } from "../gfx/helpers/GfxShaderLibrary";
 import { GfxrAttachmentSlot, GfxrRenderTargetDescription, GfxrGraphBuilder, GfxrRenderTargetID, GfxrResolveTextureID } from "../gfx/render/GfxRenderGraph";
 import { GfxWrapMode, GfxTexture, GfxTexFilterMode, GfxBindingLayoutDescriptor, GfxMipFilterMode, GfxBlendMode, GfxBlendFactor, GfxMegaStateDescriptor, GfxFormat, GfxProgram } from "../gfx/platform/GfxPlatform";
 import { GfxRenderInst, GfxRenderInstManager } from "../gfx/render/GfxRenderInstManager";
@@ -29,9 +29,9 @@ layout(std140) uniform ub_Params {
 `;
 
 class BlurDownProgram extends DeviceProgram {
-    public vert = GfxShaderLibrary.fullscreenVS;
+    public override vert = GfxShaderLibrary.fullscreenVS;
 
-    public frag = `
+    public override frag = `
 ${BindingsDefinition}
 
 in vec2 v_TexCoord;
@@ -51,9 +51,9 @@ void main() {
 }
 
 class BlurUpProgram extends DeviceProgram {
-    public vert = GfxShaderLibrary.fullscreenVS;
+    public override vert = GfxShaderLibrary.fullscreenVS;
 
-    public frag = `
+    public override frag = `
 ${BindingsDefinition}
 
 in vec2 v_TexCoord;

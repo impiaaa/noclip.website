@@ -8,8 +8,8 @@ import { GfxrGraphBuilder, GfxrPass, GfxrPassScope, GfxrRenderTargetID } from '.
 import { SceneContext } from '../SceneBase';
 import * as GX_Material from '../gx/gx_material';
 import { fillSceneParamsDataOnTemplate } from '../gx/gx_render';
-import { getDebugOverlayCanvas2D, drawWorldSpaceText, drawWorldSpacePoint, drawWorldSpaceLine } from "../DebugJunk";
-import { colorCopy, colorNewFromRGBA, White } from '../Color';
+import { getDebugOverlayCanvas2D, drawWorldSpaceText } from "../DebugJunk";
+import { colorCopy, colorNewFromRGBA } from '../Color';
 
 import { SFA_GAME_INFO, GameInfo } from './scenes';
 import { loadRes, ResourceCollection } from './resource';
@@ -27,6 +27,8 @@ import { LightType, WorldLights } from './WorldLights';
 import { SFATextureFetcher } from './textures';
 import { SphereMapManager } from './SphereMaps';
 import { computeViewMatrix } from '../Camera';
+import { nArray } from '../util';
+import { transformVec3Mat4w0, transformVec3Mat4w1 } from '../MathHelpers';
 
 const scratchVec0 = vec3.create();
 const scratchMtx0 = mat4.create();
@@ -119,7 +121,7 @@ export class World {
     }
     
     public setupLightsForObject(lights: GX_Material.Light[], obj: ObjectInstance | undefined, sceneCtx: SceneRenderContext, typeMask: LightType) {
-        const probedLights = obj !== undefined ? this.worldLights.probeLightsOnObject(obj, sceneCtx, typeMask) : this.worldLights.lights;
+        const probedLights = obj !== undefined ? this.worldLights.probeLightsOnObject(obj, sceneCtx, typeMask, 8) : this.worldLights.lights;
         let i = 0;
 
         const worldView = scratchMtx0;
@@ -133,13 +135,13 @@ export class World {
                 lights[i].reset();
                 if (light.type === LightType.DIRECTIONAL) {
                     vec3.scale(lights[i].Position, light.direction, -100000.0);
-                    vec3.transformMat4(lights[i].Position, lights[i].Position, worldViewSR);
+                    transformVec3Mat4w0(lights[i].Position, worldViewSR, lights[i].Position);
                     colorCopy(lights[i].Color, light.color);
                     vec3.set(lights[i].CosAtten, 1.0, 0.0, 0.0);
                     vec3.set(lights[i].DistAtten, 1.0, 0.0, 0.0);
                 } else { // LightType.POINT
                     light.getPosition(scratchVec0);
-                    vec3.transformMat4(lights[i].Position, scratchVec0, worldView);
+                    transformVec3Mat4w1(lights[i].Position, worldView, scratchVec0);
                     // drawWorldSpacePoint(getDebugOverlayCanvas2D(), sceneCtx.viewerInput.camera.clipFromWorldMatrix, light.position);
                     // TODO: use correct parameters
                     colorCopy(lights[i].Color, light.color);
@@ -180,7 +182,7 @@ class WorldRenderer extends SFARenderer {
     private sky: Sky; // TODO: move to World?
     private sphereMapMan: SphereMapManager;
 
-    constructor(protected world: World, materialFactory: MaterialFactory) {
+    constructor(protected override world: World, materialFactory: MaterialFactory) {
         super(world.device, world.animController, materialFactory);
         if (this.world.resColl.texFetcher instanceof SFATextureFetcher)
             this.textureHolder = this.world.resColl.texFetcher.textureHolder;
@@ -275,7 +277,7 @@ class WorldRenderer extends SFARenderer {
             console.log(`Failed to load texture`);
     }
 
-    protected update(viewerInput: Viewer.ViewerRenderInput) {
+    protected override update(viewerInput: Viewer.ViewerRenderInput) {
         super.update(viewerInput);
 
         this.materialFactory.update(this.animController);
@@ -298,11 +300,11 @@ class WorldRenderer extends SFARenderer {
         }
     }
     
-    protected addSkyRenderInsts(device: GfxDevice, renderInstManager: GfxRenderInstManager, renderLists: SFARenderLists, sceneCtx: SceneRenderContext) {
+    protected override addSkyRenderInsts(device: GfxDevice, renderInstManager: GfxRenderInstManager, renderLists: SFARenderLists, sceneCtx: SceneRenderContext) {
         this.sky.addSkyRenderInsts(device, renderInstManager, renderLists, sceneCtx);
     }
 
-    protected addSkyRenderPasses(device: GfxDevice, builder: GfxrGraphBuilder, renderInstManager: GfxRenderInstManager, renderLists: SFARenderLists, mainColorTargetID: GfxrRenderTargetID, sceneCtx: SceneRenderContext) {
+    protected override addSkyRenderPasses(device: GfxDevice, builder: GfxrGraphBuilder, renderInstManager: GfxRenderInstManager, renderLists: SFARenderLists, mainColorTargetID: GfxrRenderTargetID, sceneCtx: SceneRenderContext) {
         this.sky.addSkyRenderPasses(device, this.renderHelper, builder, renderInstManager, renderLists, mainColorTargetID, this.mainDepthDesc, sceneCtx);
     }
 
@@ -315,7 +317,7 @@ class WorldRenderer extends SFARenderer {
         }
     }
 
-    protected addWorldRenderInsts(device: GfxDevice, renderInstManager: GfxRenderInstManager, renderLists: SFARenderLists, sceneCtx: SceneRenderContext) {
+    protected override addWorldRenderInsts(device: GfxDevice, renderInstManager: GfxRenderInstManager, renderLists: SFARenderLists, sceneCtx: SceneRenderContext) {
         renderInstManager.setCurrentRenderInstList(renderLists.world[0]);
 
         const template = renderInstManager.pushTemplateRenderInst();
@@ -330,6 +332,8 @@ class WorldRenderer extends SFARenderer {
             setupLights: undefined!,
         };
 
+        const lights = nArray(8, () => new GX_Material.Light());
+
         if (this.showObjects) {
             for (let i = 0; i < this.world.objectInstances.length; i++) {
                 const obj = this.world.objectInstances[i];
@@ -338,11 +342,12 @@ class WorldRenderer extends SFARenderer {
                     continue;
     
                 if (obj.isInLayer(this.layerSelect.getValue())) {
-                    modelCtx.setupLights = (lights: GX_Material.Light[], sceneCtx: SceneRenderContext, typeMask: LightType) => {
+                    modelCtx.setupLights = (lights: GX_Material.Light[], typeMask: LightType) => {
                         this.setupLightsForObject(lights, obj, sceneCtx, typeMask);
                     };
+
                     obj.addRenderInsts(device, renderInstManager, renderLists, modelCtx);
-        
+
                     const drawLabels = false;
                     if (drawLabels) {
                         obj.getPosition(scratchVec0);
@@ -351,26 +356,27 @@ class WorldRenderer extends SFARenderer {
                 }
             }
         }
-        
+
+        modelCtx.setupLights = () => {};
         if (this.world.mapInstance !== null)
             this.world.mapInstance.addRenderInsts(device, renderInstManager, renderLists, modelCtx);
 
         renderInstManager.popTemplateRenderInst();
     }
 
-    protected addWorldRenderPassesInner(device: GfxDevice, builder: GfxrGraphBuilder, renderInstManager: GfxRenderInstManager, sceneCtx: SceneRenderContext) {
+    protected override addWorldRenderPassesInner(device: GfxDevice, builder: GfxrGraphBuilder, renderInstManager: GfxRenderInstManager, sceneCtx: SceneRenderContext) {
         this.sphereMapMan.renderMaps(device, builder, this.renderHelper, renderInstManager, sceneCtx);
     }
 
-    protected attachResolveTexturesForWorldOpaques(builder: GfxrGraphBuilder, pass: GfxrPass) {
+    protected override attachResolveTexturesForWorldOpaques(builder: GfxrGraphBuilder, pass: GfxrPass) {
         this.sphereMapMan.attachResolveTextures(builder, pass);
     }
 
-    protected resolveLateSamplerBindingsForWorldOpaques(renderList: GfxRenderInstList, scope: GfxrPassScope) {
+    protected override resolveLateSamplerBindingsForWorldOpaques(renderList: GfxRenderInstList, scope: GfxrPassScope) {
         this.sphereMapMan.resolveLateSamplerBindings(renderList, scope, this.renderHelper.getCache());
     }
 
-    public destroy(device: GfxDevice) {
+    public override destroy(device: GfxDevice) {
         super.destroy(device);
         this.world.destroy(device);
         this.sky.destroy(device);

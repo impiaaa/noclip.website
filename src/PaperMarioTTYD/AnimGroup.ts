@@ -1,7 +1,7 @@
 
 import ArrayBufferSlice from "../ArrayBufferSlice";
 import { readString, nArray, assert, assertExists, align } from "../util";
-import { GX_VtxDesc, GX_VtxAttrFmt, LoadedVertexLayout, compileVtxLoader, LoadedVertexData, VtxLoader, GX_Array } from "../gx/gx_displaylist";
+import { GX_VtxDesc, GX_VtxAttrFmt, LoadedVertexLayout, compileVtxLoader, LoadedVertexData, VtxLoader, GX_Array, GX_VtxDescOutputMode } from "../gx/gx_displaylist";
 import * as GX from "../gx/gx_enum";
 import { mat4, ReadonlyMat4, vec3 } from "gl-matrix";
 import { GfxDevice, GfxBuffer, GfxBufferUsage, GfxBufferFrequencyHint, GfxVertexBufferDescriptor, GfxIndexBufferDescriptor, GfxSampler } from "../gfx/platform/GfxPlatform";
@@ -9,7 +9,7 @@ import { GfxRenderInstManager, GfxRendererLayer, setSortKeyLayer, setSortKeyBias
 import * as TPL from "./tpl";
 import { BTIData, TEX1_SamplerSub } from "../Common/JSYSTEM/JUTTexture";
 import { GfxRenderCache } from "../gfx/render/GfxRenderCache";
-import { GXShapeHelperGfx, GXMaterialHelperGfx, MaterialParams, PacketParams, translateTexFilterGfx, translateWrapModeGfx } from "../gx/gx_render";
+import { GXShapeHelperGfx, GXMaterialHelperGfx, MaterialParams, DrawParams, translateTexFilterGfx, translateWrapModeGfx } from "../gx/gx_render";
 import { ViewerRenderInput } from "../viewer";
 import { GXMaterialBuilder } from "../gx/GXMaterialBuilder";
 import { mapSetMaterialTev } from "./world";
@@ -255,16 +255,16 @@ export function parse(buffer: ArrayBufferSlice): AnimGroup {
             const vat: GX_VtxAttrFmt[] = [];
 
             assert(vtxPosCount > 0);
-            vcd[GX.Attr.POS] = { type: GX.AttrType.INDEX16, enableOutput: vtxArrays[GX.Attr.POS].buffer.byteLength > 0 };
+            vcd[GX.Attr.POS] = { type: GX.AttrType.INDEX16, outputMode: vtxArrays[GX.Attr.POS].buffer.byteLength > 0 ? GX_VtxDescOutputMode.VertexData : GX_VtxDescOutputMode.None };
             vat[GX.Attr.POS] = { compCnt: GX.CompCnt.POS_XYZ, compType: GX.CompType.F32, compShift: 0 };
-            vcd[GX.Attr.NRM] = { type: GX.AttrType.INDEX16, enableOutput: vtxArrays[GX.Attr.NRM].buffer.byteLength > 0 };
+            vcd[GX.Attr.NRM] = { type: GX.AttrType.INDEX16, outputMode: vtxArrays[GX.Attr.NRM].buffer.byteLength > 0 ? GX_VtxDescOutputMode.VertexData : GX_VtxDescOutputMode.None };
             vat[GX.Attr.NRM] = { compCnt: GX.CompCnt.NRM_XYZ, compType: GX.CompType.F32, compShift: 0 };
-            vcd[GX.Attr.CLR0] = { type: GX.AttrType.INDEX16, enableOutput: vtxArrays[GX.Attr.CLR0].buffer.byteLength > 0 };
+            vcd[GX.Attr.CLR0] = { type: GX.AttrType.INDEX16, outputMode: vtxArrays[GX.Attr.CLR0].buffer.byteLength > 0 ? GX_VtxDescOutputMode.VertexData : GX_VtxDescOutputMode.None };
             vat[GX.Attr.CLR0] = { compCnt: GX.CompCnt.CLR_RGBA, compType: GX.CompType.RGBA8, compShift: 0 };
 
             for (let j = 0; j < texCount; j++) {
                 const attr = GX.Attr.TEX0 + j;
-                vcd[attr] = { type: GX.AttrType.INDEX16, enableOutput: vtxArrays[attr].buffer.byteLength > 0 };
+                vcd[attr] = { type: GX.AttrType.INDEX16, outputMode: vtxArrays[attr].buffer.byteLength > 0 ? GX_VtxDescOutputMode.VertexData : GX_VtxDescOutputMode.None };
                 vat[attr] = { compCnt: GX.CompCnt.TEX_ST, compType: GX.CompType.F32, compShift: 0 };
             }
 
@@ -538,7 +538,7 @@ function translateSampler(device: GfxDevice, cache: GfxRenderCache, sampler: TEX
 }
 
 const materialParams = new MaterialParams();
-const packetParams = new PacketParams();
+const drawParams = new DrawParams();
 const scratchVec3a = vec3.create();
 
 class AnimGroupInstance_Shape {
@@ -641,8 +641,8 @@ class AnimGroupInstance_Shape {
             shapeHelper.setOnRenderInst(renderInst);
             materialHelper.setOnRenderInst(device, renderInstManager.gfxRenderCache, renderInst);
 
-            mat4.mul(packetParams.u_PosMtx[0], viewerInput.camera.viewMatrix, modelMatrix);
-            materialHelper.allocatePacketParamsDataOnInst(renderInst, packetParams);
+            mat4.mul(drawParams.u_PosMtx[0], viewerInput.camera.viewMatrix, modelMatrix);
+            materialHelper.allocateDrawParamsDataOnInst(renderInst, drawParams);
 
             for (let j = 0; j < draw.texId.length; j++) {
                 const texId = draw.texId[j];

@@ -273,6 +273,7 @@ export interface GfxDeviceLimits {
     uniformBufferWordAlignment: number;
     uniformBufferMaxPageWordSize: number;
     readonly supportedSampleCounts: number[];
+    occlusionQueriesRecommended: boolean;
 }
 
 export interface GfxDebugGroup {
@@ -289,8 +290,8 @@ export const enum GfxViewportOrigin {
 }
 
 export const enum GfxClipSpaceNearZ {
-    NegativeOne,
-    Zero,
+    NegativeOne = -1.0,
+    Zero = 0.0,
 }
 
 export interface GfxVendorInfo {
@@ -304,14 +305,6 @@ export interface GfxVendorInfo {
 
 export type GfxPlatformFramebuffer = WebGLFramebuffer;
 
-// Viewport in normalized coordinate space, from 0 to 1.
-export interface GfxNormalizedViewportCoords {
-    x: number;
-    y: number;
-    w: number;
-    h: number;
-}
-
 export const enum GfxQueryPoolType {
     OcclusionConservative,
 }
@@ -324,7 +317,7 @@ export interface GfxSwapChain {
     getCanvas(): HTMLCanvasElement | OffscreenCanvas;
     getOnscreenTexture(): GfxTexture;
     present(): void;
-    createWebXRLayer(webXRSession: XRSession): XRWebGLLayer;
+    createWebXRLayer(webXRSession: XRSession): PromiseLike<XRWebGLLayer>;
 }
 
 export interface GfxRenderPass {

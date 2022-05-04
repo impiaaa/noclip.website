@@ -5,7 +5,7 @@ import { JKRArchive, RARCFile } from "../Common/JSYSTEM/JKRArchive";
 import { GfxDevice } from "../gfx/platform/GfxPlatform";
 import { GfxRenderCache } from "../gfx/render/GfxRenderCache";
 import { assert, readString, assertExists } from "../util";
-import { J3DModelData, BMDModelMaterialData } from "../Common/JSYSTEM/J3D/J3DGraphBase";
+import { J3DModelData, J3DModelMaterialData } from "../Common/JSYSTEM/J3D/J3DGraphBase";
 import { BTI, BTIData } from "../Common/JSYSTEM/JUTTexture";
 import ArrayBufferSlice from "../ArrayBufferSlice";
 import { Destroyable } from "../SceneBase";
@@ -48,7 +48,7 @@ export const enum ResType {
 
 export type ResAssetType<T extends ResType> =
     T extends ResType.Model ? J3DModelData :
-    T extends ResType.Bmt ? BMDModelMaterialData :
+    T extends ResType.Bmt ? J3DModelMaterialData :
     T extends ResType.Bck ? ANK1 :
     T extends ResType.Bpk ? TPT1 :
     T extends ResType.Brk ? TRK1 :
@@ -59,7 +59,7 @@ export type ResAssetType<T extends ResType> =
     T extends ResType.Dzs ? DZS :
     T extends ResType.Bva ? VAF1 :
     T extends ResType.Raw ? NamedArrayBufferSlice :
-    never;
+    unknown;
 
 export class dRes_control_c {
     public resObj: dRes_info_c[] = [];
@@ -204,8 +204,7 @@ export class dRes_info_c {
             type === `BDL ` || type === `BDLM` || type === `BDLC` || type === `BDLI`) {
             // J3D models.
 
-            // XXX(jstpierre): Sometimes there are J3D2bmd2 files we can't parse, like
-            // Ff.arc / ff.bmd. Skip over these.
+            // Sometimes there are J3D2bmd2 files we can't parse, like Ff.arc / ff.bmd. Skip over these.
             const j3d = new JSystemFileReaderHelper(file.buffer);
             if (j3d.magic === 'J3D2bmd3' || j3d.magic === 'J3D2bdl4') {
                 const res = new J3DModelData(device, cache, BMD.parseReader(j3d));
@@ -214,7 +213,7 @@ export class dRes_info_c {
             }
         } else if (type === `BMT ` || type === `BMTM`) {
             // J3D material table.
-            const res = new BMDModelMaterialData(device, cache, BMT.parse(file.buffer));
+            const res = new J3DModelMaterialData(device, cache, BMT.parse(file.buffer));
             this.destroyables.push(res);
             resEntry.res = res;
         } else if (type === `BCK ` || type === `BCKS`) {

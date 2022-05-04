@@ -1,13 +1,12 @@
-
 // Resource System
 
 import * as Pako from 'pako';
-import { decompress as lzoDecompress } from "../Common/Compression/LZO";
+import { decompress as lzoDecompress } from '../Common/Compression/LZO';
 
 import ArrayBufferSlice from '../ArrayBufferSlice';
-import { assert, hexzero, readString, assertExists } from "../util";
+import { assert, hexzero, readString, assertExists } from '../util';
 
-import { PAK, FileResource, CompressionMethod } from "./pak";
+import { PAK, FileResource, CompressionMethod } from './pak';
 
 import * as MLVL from './mlvl';
 import * as MREA from './mrea';
@@ -16,12 +15,26 @@ import * as TXTR from './txtr';
 import * as CMDL from './cmdl';
 import * as ANCS from './ancs';
 import * as CHAR from './char';
+import * as ANIM from './anim';
+import * as EVNT from './evnt';
+import * as CSKR from './cskr';
+import * as CINF from './cinf';
+import * as PART from './part';
+import * as SWHC from './swhc';
+import * as ELSC from './elsc';
 import { InputStream } from './stream';
 
-type ParseFunc<T> = (stream: InputStream, resourceSystem: ResourceSystem, assetID: string) => T;
-type Resource = any;
+export const enum ResourceGame {
+    MP1,
+    MP2,
+    MP3,
+    DKCR
+}
 
-export const invalidAssetID: string = "\xFF\xFF\xFF\xFF";
+export type ParseFunc<T> = (stream: InputStream, resourceSystem: ResourceSystem, assetID: string, loadDetails?: any) => T;
+export type Resource = any;
+
+export const invalidAssetID: string = '\xFF\xFF\xFF\xFF';
 
 const FourCCLoaders: { [n: string]: ParseFunc<Resource> } = {
     'MLVL': MLVL.parse,
@@ -31,6 +44,13 @@ const FourCCLoaders: { [n: string]: ParseFunc<Resource> } = {
     'CMDL': CMDL.parse,
     'ANCS': ANCS.parse,
     'CHAR': CHAR.parse,
+    'ANIM': ANIM.parse,
+    'EVNT': EVNT.parse,
+    'CSKR': CSKR.parse,
+    'CINF': CINF.parse,
+    'PART': PART.parse,
+    'SWHC': SWHC.parse,
+    'ELSC': ELSC.parse,
 };
 
 interface NameDataAsset {
@@ -47,7 +67,7 @@ export interface NameData {
     Areas: { [key: string]: NameDataArea },
 }
 
-function hexName(id: string): string {
+export function hexName(id: string): string {
     let S = '';
     for (let i = 0; i < id.length; i++)
         S += hexzero(id.charCodeAt(i), 2).toUpperCase();
@@ -65,11 +85,16 @@ function combineBuffers(totalSize: number, buffers: Uint8Array[]): Uint8Array {
     return totalBuffer;
 }
 
-export class ResourceSystem {
-    private _cache: Map<string, Resource>;
+export interface LoadContext {
+    cachePriority: number;
+    loadDetails: any;
+}
 
-    constructor(public paks: PAK[], public nameData: NameData | null = null) {
-        this._cache = new Map<string, Resource>();
+export class ResourceSystem {
+    private _cache: Map<string, { resource: Resource, priority: number }>;
+
+    constructor(public game: ResourceGame, public paks: PAK[], public nameData: NameData | null = null) {
+        this._cache = new Map<string, { resource: Resource, priority: number }>();
     }
 
     private loadResourceBuffer_LZO(buffer: ArrayBufferSlice): ArrayBufferSlice {
@@ -148,10 +173,10 @@ export class ResourceSystem {
         } else if (resource.compressionMethod === CompressionMethod.LZO) {
             return this.loadResourceBuffer_LZO(resource.buffer);
         } else if (resource.compressionMethod === CompressionMethod.CMPD_ZLIB ||
-                   resource.compressionMethod === CompressionMethod.CMPD_LZO) {
+            resource.compressionMethod === CompressionMethod.CMPD_LZO) {
             return this.loadResourceBuffer_CMPD(resource.buffer, resource.compressionMethod);
         } else {
-            throw "whoops";
+            throw 'whoops';
         }
     }
 
@@ -177,15 +202,22 @@ export class ResourceSystem {
         return null;
     }
 
-    public loadAssetByID<T extends Resource>(assetID: string, fourCC: string): T | null {
+    public findResourceByName(assetName: string): FileResource | null {
+        for (const pak of this.paks) {
+            const resource = pak.namedResourceTable.get(assetName);
+            if (resource)
+                return resource;
+        }
+        return null;
+    }
+
+    public loadAssetByIDWithFunc<T extends Resource>(assetID: string, fourCC: string, loaderFunc: ParseFunc<Resource>, loadContext?: LoadContext): T | null {
         if (assetID === '\xFF\xFF\xFF\xFF' || assetID === '\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF')
             return null;
 
         const cached = this._cache.get(assetID);
-        if (cached !== undefined)
-            return cached;
-
-        const loaderFunc = assertExists(FourCCLoaders[fourCC]);
+        if (cached !== undefined && (!loadContext || cached.priority >= loadContext.cachePriority))
+            return cached.resource;
 
         const resource = this.findResourceByID(assetID);
         if (!resource)
@@ -194,8 +226,20 @@ export class ResourceSystem {
         assert(resource.fourCC === fourCC);
         const buffer = this.loadResourceBuffer(resource);
         const stream = new InputStream(buffer, assetID.length);
-        const inst = loaderFunc(stream, this, assetID);
-        this._cache.set(assetID, inst);
+        const inst = loaderFunc(stream, this, assetID, loadContext?.loadDetails);
+        this._cache.set(assetID, { resource: inst, priority: loadContext?.cachePriority ?? 0 });
         return inst;
+    }
+
+    public loadAssetByID<T extends Resource>(assetID: string, fourCC: string, loadContext?: LoadContext): T | null {
+        return this.loadAssetByIDWithFunc(assetID, fourCC, assertExists(FourCCLoaders[fourCC]), loadContext);
+    }
+
+    public loadAssetByName<T extends Resource>(assetName: string, fourCC: string, loadContext?: LoadContext): T | null {
+        const resource = this.findResourceByName(assetName);
+        if (!resource)
+            return null;
+
+        return this.loadAssetByID(resource.fileID, fourCC, loadContext);
     }
 }

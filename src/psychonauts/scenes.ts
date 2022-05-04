@@ -26,7 +26,7 @@ class PsychonautsSceneDesc implements Viewer.SceneDesc {
             renderer.textureHolder.addTextures(device, commonPPF.textures);
             renderer.textureHolder.addTextures(device, scenePPF.textures);
 
-            const sceneRenderer = new SceneRenderer(device, renderer.textureHolder, assertExists(scenePPF.mainScene));
+            const sceneRenderer = new SceneRenderer(renderer.cache, renderer.textureHolder, assertExists(scenePPF.mainScene));
             renderer.sceneRenderers.push(sceneRenderer);
             return renderer;
         });
@@ -79,6 +79,7 @@ const sceneDescs = [
     new PsychonautsSceneDesc("ASRU", "Ruins"),
     "The Milkman Conspiracy",
     new PsychonautsSceneDesc("MMI1", "The Neighborhood"),
+    new PsychonautsSceneDesc("MMI2", "The Book Repository"),
     new PsychonautsSceneDesc("MMDM", "The Den Mother"),
     "Gloria's Theater",
     new PsychonautsSceneDesc("THMS", "The Stage"),

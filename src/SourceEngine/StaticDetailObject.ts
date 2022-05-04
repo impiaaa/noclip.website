@@ -3,8 +3,8 @@ import ArrayBufferSlice from "../ArrayBufferSlice";
 import { assert, readString } from "../util";
 import { vec4, vec3, mat4, ReadonlyVec3 } from "gl-matrix";
 import { Color, colorClampLDR, colorCopy, colorNewFromRGBA } from "../Color";
-import { unpackColorRGBExp32, BaseMaterial, MaterialProgramBase, LightCache, EntityMaterialParameters } from "./Materials";
-import { SourceRenderContext, SourceEngineView, BSPRenderer } from "./Main";
+import { unpackColorRGBExp32, BaseMaterial, MaterialShaderTemplateBase, LightCache, EntityMaterialParameters } from "./Materials";
+import { SourceRenderContext, BSPRenderer } from "./Main";
 import { GfxInputLayout, GfxVertexAttributeDescriptor, GfxInputLayoutBufferDescriptor, GfxFormat, GfxVertexBufferFrequency, GfxDevice, GfxBuffer, GfxBufferUsage, GfxBufferFrequencyHint, GfxInputState } from "../gfx/platform/GfxPlatform";
 import { computeModelMatrixSRT, transformVec3Mat4w1, MathConstants, getMatrixTranslation, scaleMatrix } from "../MathHelpers";
 import { GfxRenderInstManager, setSortKeyDepth } from "../gfx/render/GfxRenderInstManager";
@@ -15,7 +15,8 @@ import { StudioModelInstance, HardwareVertData, computeModelMatrixPosQAngle } fr
 import BitMap from "../BitMap";
 import { BSPFile } from "./BSPFile";
 import { AABB } from "../Geometry";
-import { convertToTrianglesRange, GfxTopology } from "../gfx/helpers/TopologyHelpers";
+import { GfxTopology, makeTriangleIndexBuffer } from "../gfx/helpers/TopologyHelpers";
+import { makeStaticDataBuffer } from "../gfx/helpers/BufferHelpers";
 
 //#region Detail Models
 const enum DetailPropOrientation { NORMAL, SCREEN_ALIGNED, SCREEN_ALIGNED_VERTICAL, }
@@ -180,7 +181,6 @@ export class DetailPropLeafRenderer {
     private modelEntries: StudioModelInstance[] = [];
 
     private vertexData: Float32Array;
-    private indexData: Uint16Array;
     private vertexBuffer: GfxBuffer;
     private indexBuffer: GfxBuffer;
     private inputState: GfxInputState;
@@ -190,11 +190,11 @@ export class DetailPropLeafRenderer {
         const device = renderContext.device, cache = renderContext.renderCache;
 
         const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
-            { location: MaterialProgramBase.a_Position, bufferIndex: 0, bufferByteOffset: 0*0x04, format: GfxFormat.F32_RGB, },
-            { location: MaterialProgramBase.a_TexCoord, bufferIndex: 0, bufferByteOffset: 3*0x04, format: GfxFormat.F32_RG, },
-            { location: MaterialProgramBase.a_Color,    bufferIndex: 0, bufferByteOffset: 5*0x04, format: GfxFormat.F32_RGBA, },
-            { location: MaterialProgramBase.a_Normal,   bufferIndex: 1, bufferByteOffset: 0, format: GfxFormat.F32_RGBA, },
-            { location: MaterialProgramBase.a_TangentS, bufferIndex: 1, bufferByteOffset: 0, format: GfxFormat.F32_RGBA, },
+            { location: MaterialShaderTemplateBase.a_Position, bufferIndex: 0, bufferByteOffset: 0*0x04, format: GfxFormat.F32_RGB, },
+            { location: MaterialShaderTemplateBase.a_TexCoord, bufferIndex: 0, bufferByteOffset: 3*0x04, format: GfxFormat.F32_RG, },
+            { location: MaterialShaderTemplateBase.a_Color,    bufferIndex: 0, bufferByteOffset: 5*0x04, format: GfxFormat.F32_RGBA, },
+            { location: MaterialShaderTemplateBase.a_Normal,   bufferIndex: 1, bufferByteOffset: 0, format: GfxFormat.F32_RGBA, },
+            { location: MaterialShaderTemplateBase.a_TangentS, bufferIndex: 1, bufferByteOffset: 0, format: GfxFormat.F32_RGBA, },
         ];
         const vertexBufferDescriptors: GfxInputLayoutBufferDescriptor[] = [
             { byteStride: (3+2+4)*0x04, frequency: GfxVertexBufferFrequency.PerVertex, },
@@ -204,8 +204,6 @@ export class DetailPropLeafRenderer {
         this.inputLayout = cache.createInputLayout({ vertexAttributeDescriptors, vertexBufferDescriptors, indexBufferFormat });
 
         // Create a vertex buffer for our detail sprites.
-        let vertexCount = 0;
-        let indexCount = 0;
         const objects = bspFile.detailObjects!;
         const detailModels = objects.leafDetailModels.get(leaf)!;
         for (let i = 0; i < detailModels.length; i++) {
@@ -213,10 +211,6 @@ export class DetailPropLeafRenderer {
 
             if (detailModel.type === DetailPropType.SPRITE && detailModel.orientation === DetailPropOrientation.SCREEN_ALIGNED_VERTICAL) {
                 const desc = objects.detailSpriteDict[detailModel.detailModel];
-
-                // Four vertices & six indices per quad.
-                vertexCount += 4;
-                indexCount += 6;
 
                 // Compute bounding sphere for sprite.
                 const entry = new DetailSpriteEntry();
@@ -242,11 +236,14 @@ export class DetailPropLeafRenderer {
 
         vec3.scale(this.centerPoint, this.centerPoint, 1 / this.spriteEntries.length);
 
-        this.vertexData = new Float32Array(vertexCount * 9);
-        this.indexData = new Uint16Array(indexCount);
+        const numSprites = this.spriteEntries.length;
+        const numVertices = numSprites * 4;
+        this.vertexData = new Float32Array(numVertices * 9);
+
+        const indexData = makeTriangleIndexBuffer(GfxTopology.Quads, 0, numVertices);
+        this.indexBuffer = makeStaticDataBuffer(device, GfxBufferUsage.Index, indexData.buffer);
 
         this.vertexBuffer = device.createBuffer((this.vertexData.byteLength + 3) >>> 2, GfxBufferUsage.Vertex, GfxBufferFrequencyHint.Dynamic);
-        this.indexBuffer = device.createBuffer((this.indexData.byteLength + 3) >>> 2, GfxBufferUsage.Index, GfxBufferFrequencyHint.Dynamic);
         this.inputState = device.createInputState(this.inputLayout, [
             { buffer: this.vertexBuffer, byteOffset: 0, },
             { buffer: renderContext.materialCache.staticResources.zeroVertexBuffer, byteOffset: 0, },
@@ -339,11 +336,8 @@ export class DetailPropLeafRenderer {
             vertexOffs += fillColor(vertexData, vertexOffs, entry.color);
         }
 
-        convertToTrianglesRange(this.indexData, 0, GfxTopology.QUADS, 0, sortList.length * 4);
-
         const device = renderContext.device;
         device.uploadBufferData(this.vertexBuffer, 0, new Uint8Array(this.vertexData.buffer));
-        device.uploadBufferData(this.indexBuffer, 0, new Uint8Array(this.indexData.buffer));
 
         const renderInst = renderInstManager.newRenderInst();
         renderInst.setInputLayoutAndState(this.inputLayout, this.inputState);
@@ -493,7 +487,7 @@ export function deserializeGameLump_sprp(buffer: ArrayBufferSlice, version: numb
         // TF2's 7-10 seem to use this below, which is 8 bytes.
         // The version 10 that CS:GO and Portal 2 use (bspfile version 21) is very different.
 
-        if (bspVersion === 21) {
+        if (bspVersion === 21 || bspVersion === 22) {
             // CS:GO, Portal 2
 
             if (version >= 7) {
@@ -573,14 +567,11 @@ export class StaticPropRenderer {
         mat4.copy(this.studioModelInstance.modelMatrix, scratchMatrix);
 
         // Bind static lighting data, if we have it...
-        if (!(this.staticProp.flags & StaticPropFlags.NO_PER_VERTEX_LIGHTING)) {
-            // TODO(HDR)
-            const spPrefix = (false && this.bspRenderer.bsp.usingHDR) ? `sp_hdr` : `sp`;
-            const staticLightingData = await renderContext.filesystem.fetchFileData(`${spPrefix}_${this.staticProp.index}.vhv`);
-            if (staticLightingData !== null) {
-                this.colorMeshData = new HardwareVertData(renderContext, staticLightingData);
-                this.studioModelInstance.setColorMeshData(renderContext.device, this.colorMeshData);
-            }
+        const spPrefix = this.bspRenderer.bsp.usingHDR ? `sp_hdr` : `sp`;
+        const staticLightingData = await renderContext.filesystem.fetchFileData(`${spPrefix}_${this.staticProp.index}.vhv`);
+        if (staticLightingData !== null) {
+            this.colorMeshData = new HardwareVertData(renderContext, staticLightingData);
+            this.studioModelInstance.setColorMeshData(renderContext.device, this.colorMeshData);
         }
     }
 

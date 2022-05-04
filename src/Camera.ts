@@ -7,11 +7,8 @@ import { projectionMatrixConvertClipSpaceNearZ } from './gfx/helpers/ProjectionH
 import { WebXRContext } from './WebXR';
 import { assert } from './util';
 import { projectionMatrixReverseDepth } from './gfx/helpers/ReversedDepthHelpers';
-import { GfxClipSpaceNearZ, GfxNormalizedViewportCoords } from './gfx/platform/GfxPlatform';
-import { CameraAnimationManager, InterpolationStep } from './CameraAnimationManager';
-import { drawWorldSpaceLine, getDebugOverlayCanvas2D } from './DebugJunk';
-import { StudioPanel } from './Studio';
-import { Blue, Color, Green, Magenta } from './Color';
+import { GfxClipSpaceNearZ } from './gfx/platform/GfxPlatform';
+import { CameraAnimationManager, InterpolationStep, StudioPanel } from './Studio';
 
 // TODO(jstpierre): All of the cameras and camera controllers need a pretty big overhaul.
 
@@ -514,20 +511,12 @@ export class FPSCameraController implements CameraController {
 export class StudioCameraController extends FPSCameraController {
     public isAnimationPlaying: boolean = false;
     private interpStep: InterpolationStep = new InterpolationStep();
-    private scratchVec: vec3 = vec3.create();
-    private scratchVecUp: vec3 = vec3.create();
-    private scratchMat: mat4 = mat4.create();
-
-    public previewPath: boolean = true;
-    public previewLineColor: Color = Magenta;
-    public previewLineLookAtColor: Color = Blue;
-    public previewLineYAxisColor: Color = Green;
 
     constructor(private animationManager: CameraAnimationManager, private studioPanel: StudioPanel) {
         super();
     }
 
-    public update(inputManager: InputManager, dt: number): CameraUpdateResult {
+    public override update(inputManager: InputManager, dt: number): CameraUpdateResult {
         let result;
 
         if (this.isAnimationPlaying) {
@@ -536,42 +525,12 @@ export class StudioCameraController extends FPSCameraController {
                 mat4.invert(this.camera.viewMatrix, this.camera.worldMatrix);
                 this.camera.worldMatrixUpdated();
             }
-            if (inputManager.isKeyDownEventTriggered('Escape'))
-                this.stopAnimation();
             // Set result to unchanged to prevent needless savestate creation during playback.
             result = CameraUpdateResult.Unchanged;
         } else {
-            // TODO(jstpierre): Move these controls / path drawing to Studio.
-
-            if (inputManager.isKeyDownEventTriggered('Enter'))
-                this.studioPanel.addKeyframesFromMat4(mat4.clone(this.camera.worldMatrix));
-
-            if (inputManager.isKeyDownEventTriggered('Escape'))
-                this.studioPanel.endEditKeyframePosition();
-
             result = super.update(inputManager, dt);
 
-            if (this.previewPath) {
-                for (let i = 0; i <= this.studioPanel.animationPreviewSteps.length - 2; i++) {
-                    drawWorldSpaceLine(getDebugOverlayCanvas2D(), this.camera.clipFromWorldMatrix, this.studioPanel.animationPreviewSteps[i].pos, this.studioPanel.animationPreviewSteps[i + 1].pos, this.previewLineColor);
-                    if (i % 30 === 0) {
-                        drawWorldSpaceLine(getDebugOverlayCanvas2D(), this.camera.clipFromWorldMatrix, this.studioPanel.animationPreviewSteps[i].pos, this.studioPanel.animationPreviewSteps[i].lookAtPos, this.previewLineLookAtColor);
-
-                        mat4.targetTo(this.scratchMat, this.studioPanel.animationPreviewSteps[i].pos, this.studioPanel.animationPreviewSteps[i].lookAtPos, Vec3UnitY);
-                        mat4.rotateZ(this.scratchMat, this.scratchMat, -this.studioPanel.animationPreviewSteps[i].bank);
-                        computeEulerAngleRotationFromSRTMatrix(this.scratchVec, this.scratchMat);
-                        vec3.copy(this.scratchVecUp, Vec3UnitY);
-                        vec3.rotateZ(this.scratchVecUp, this.scratchVecUp, Vec3Zero, -this.scratchVec[2]);
-                        vec3.rotateY(this.scratchVecUp, this.scratchVecUp, Vec3Zero, -this.scratchVec[1]);
-                        vec3.rotateX(this.scratchVecUp, this.scratchVecUp, Vec3Zero, -this.scratchVec[0]);
-                        this.scratchVecUp[2] = 0;
-                        vec3.normalize(this.scratchVecUp, this.scratchVecUp);
-                        vec3.scaleAndAdd(this.scratchVecUp, this.studioPanel.animationPreviewSteps[i].pos, this.scratchVecUp, 100);
-                        drawWorldSpaceLine(getDebugOverlayCanvas2D(), this.camera.clipFromWorldMatrix, this.studioPanel.animationPreviewSteps[i].pos, this.scratchVecUp, this.previewLineYAxisColor);
-                        // TODO - draw arrow head lines or cone to better communicate direction?
-                    }
-                }
-            }
+            this.studioPanel.drawWorldHelpers(this.camera.clipFromWorldMatrix);
         }
 
         return result;
@@ -579,7 +538,7 @@ export class StudioCameraController extends FPSCameraController {
 
     public updateAnimation(dt: number): CameraUpdateResult {
         if (this.animationManager.isAnimationFinished()) {
-            this.stopAnimation();
+            this.studioPanel.stopAnimation();
             return CameraUpdateResult.Unchanged;
         }
 
@@ -598,14 +557,6 @@ export class StudioCameraController extends FPSCameraController {
         this.camera.worldMatrixUpdated();
     }
 
-    public playAnimation() {
-        this.isAnimationPlaying = true;
-    }
-
-    public stopAnimation() {
-        this.isAnimationPlaying = false;
-        this.studioPanel.onAnimationStopped();
-    }
 }
 
 export class XRCameraController {
@@ -1243,16 +1194,8 @@ function texProjCamera(dst: mat4, camera: Camera, scaleS: number, scaleT: number
     dst[15] = 9999.0;
 }
 
-export function texProjCameraSceneTex(dst: mat4, camera: Camera, viewport: Readonly<GfxNormalizedViewportCoords>, flipYScale: number): void {
-    // Map from -1 to 1, to viewport coords.
-
+export function texProjCameraSceneTex(dst: mat4, camera: Camera, flipYScale: number): void {
     // Map from -1 to 1 to 0 to 1.
     let scaleS = 0.5, scaleT = -0.5 * flipYScale, transS = 0.5, transT = 0.5;
-    // Map from 0 to 1 to viewport.
-    scaleS = scaleS * viewport.w;
-    scaleT = scaleT * viewport.h;
-    transS = transS * viewport.w + viewport.x;
-    transT = transT * viewport.h + viewport.y;
-
     texProjCamera(dst, camera, scaleS, scaleT, transS, transT);
 }

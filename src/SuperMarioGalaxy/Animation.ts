@@ -366,7 +366,7 @@ export class XanimePlayer {
 
             this.updateInterpoleRatio(deltaTimeFrames);
 
-            // XXX(jstpierre): Apply some easing. This is to make the animations look a bit smoother,
+            // HACK(jstpierre): Apply some easing. This is to make the animations look a bit smoother,
             // and compensate for the lack of exponential slide in updateInterpoleRatio.
             this.core.interpoleRatio = getEaseInOutValue(this.interpoleRatio);
         }
@@ -404,11 +404,11 @@ export class BtkPlayer extends AnmPlayerBase<TTK1> {
         super(resTable);
     }
 
-    public startAnimation(): void {
+    public override startAnimation(): void {
         entryTexMtxAnimator(this.modelInstance, this.currentRes!, this.frameCtrl);
     }
 
-    public stopAnimation(): void {
+    public override stopAnimation(): void {
         removeTexMtxAnimator(this.modelInstance, this.currentRes!);
     }
 }
@@ -418,11 +418,11 @@ export class BrkPlayer extends AnmPlayerBase<TRK1> {
         super(resTable);
     }
 
-    public startAnimation(): void {
+    public override startAnimation(): void {
         entryTevRegAnimator(this.modelInstance, this.currentRes!, this.frameCtrl);
     }
 
-    public stopAnimation(): void {
+    public override stopAnimation(): void {
         removeTevRegAnimator(this.modelInstance, this.currentRes!);
     }
 }
@@ -432,11 +432,11 @@ export class BtpPlayer extends AnmPlayerBase<TPT1> {
         super(resTable);
     }
 
-    public startAnimation(): void {
+    public override startAnimation(): void {
         entryTexNoAnimator(this.modelInstance, this.currentRes!, this.frameCtrl);
     }
 
-    public stopAnimation(): void {
+    public override stopAnimation(): void {
         removeTexNoAnimator(this.modelInstance, this.currentRes!);
     }
 }

@@ -67,10 +67,12 @@ import * as Scenes_HalfLife2DM from './SourceEngine/Scenes_HalfLife2DM';
 import * as Scenes_HalfLife2LostCoast from './SourceEngine/Scenes_HalfLife2LostCoast';
 import * as Scenes_HalfLife2Ep1 from './SourceEngine/Scenes_HalfLife2Ep1';
 import * as Scenes_HalfLife2Ep2 from './SourceEngine/Scenes_HalfLife2Ep2';
+import * as Scenes_NfsMostWanted from './NeedForSpeedMostWanted/scenes';
 import * as Scenes_TeamFortress2 from './SourceEngine/Scenes_TeamFortress2';
 import * as Scenes_Portal from './SourceEngine/Scenes_Portal';
 import * as Scenes_Portal2 from './SourceEngine/Scenes_Portal2';
 import * as Scenes_TheStanleyParable from './SourceEngine/Scenes_TheStanleyParable';
+import * as Scenes_Infra from './SourceEngine/Scenes_Infra';
 import * as Scenes_BeetleAdventureRacing from './BeetleAdventureRacing/Scenes';
 import * as Scenes_TheWitness from './TheWitness/Scenes_TheWitness';
 import * as Scenes_FFX from './FinalFantasyX/scenes';
@@ -78,12 +80,16 @@ import * as Scenes_WiiBanner from './Common/NW4R/lyt/Scenes_WiiBanner';
 import * as Scenes_DiddyKongRacing from './DiddyKongRacing/scenes';
 import * as Scenes_SpongebobRevengeOfTheFlyingDutchman from "./SpongebobRevengeOfTheFlyingDutchman/scenes";
 import * as Scenes_MarioKart8Deluxe from './MarioKart8Deluxe/Scenes';
+import * as Scenes_JetSetRadio from './JetSetRadio/Scenes';
+import * as Scenes_Subnautica from './Subnautica/scenes';
+import * as Scenes_Glover from './Glover/scenes';
+import * as Scenes_HalfLife from './GoldSrc/Scenes_HalfLife';
 
 import { DroppedFileSceneDesc, traverseFileSystemDataTransfer } from './Scenes_FileDrops';
 
 import { UI, Panel } from './ui';
 import { serializeCamera, deserializeCamera, FPSCameraController } from './Camera';
-import { assertExists, assert, fallbackUndefined } from './util';
+import { assertExists, assert } from './util';
 import { DataFetcher } from './DataFetcher';
 import { atob, btoa } from './Ascii85';
 import { mat4 } from 'gl-matrix';
@@ -94,7 +100,7 @@ import { standardFullClearRenderPassDescriptor } from './gfx/helpers/RenderGraph
 
 import * as Sentry from '@sentry/browser';
 import { GIT_REVISION, IS_DEVELOPMENT } from './BuildVersion';
-import { SceneDesc, SceneGroup, SceneContext, getSceneDescs, Destroyable } from './SceneBase';
+import { SceneDesc, SceneGroup, SceneContext, Destroyable } from './SceneBase';
 import { prepareFrameDebugOverlayCanvas2D } from './DebugJunk';
 import { downloadBlob } from './DownloadUtils';
 import { DataShare } from './DataShare';
@@ -142,6 +148,7 @@ const sceneGroups = [
     Scenes_BanjoTooie.sceneGroup,
     Scenes_BeetleAdventureRacing.sceneGroup,
     Scenes_DiddyKongRacing.sceneGroup,
+    Scenes_Glover.sceneGroup,
     Scenes_PaperMario64.sceneGroup,
     Scenes_Pilotwings64.sceneGroup,
     Scenes_PokemonSnap.sceneGroup,
@@ -172,6 +179,7 @@ const sceneGroups = [
     Scenes_GTA.sceneGroup.sa,
     Scenes_MarioAndSonicAtThe2012OlympicGames.sceneGroup,
     Scenes_MetroidPrime.sceneGroupMP3,
+    Scenes_NfsMostWanted.sceneGroup,
     Scenes_Psychonauts.sceneGroup,
     Scenes_SpongebobRevengeOfTheFlyingDutchman.sceneGroup,
     Scenes_SonicColors.sceneGroup,
@@ -191,6 +199,10 @@ const sceneGroups = [
     Scenes_HalfLife2Ep2.sceneGroup,
     Scenes_MarioKart8Deluxe.sceneGroup,
     Scenes_TheStanleyParable.sceneGroup,
+    Scenes_Infra.sceneGroup,
+    Scenes_JetSetRadio.sceneGroup,
+    Scenes_Subnautica.sceneGroup,
+    Scenes_HalfLife.sceneGroup,
 ];
 
 function convertCanvasToPNG(canvas: HTMLCanvasElement): Promise<Blob> {
@@ -231,6 +243,10 @@ class AnimationLoop implements ViewerUpdateInfo {
     };
 }
 
+function getSceneDescs(sceneGroup: SceneGroup): SceneDesc[] {
+    return sceneGroup.sceneDescs.filter((g) => typeof g !== 'string') as SceneDesc[];
+}
+
 class Main {
     public toplevel: HTMLElement;
     public canvas: HTMLCanvasElement;
@@ -256,6 +272,8 @@ class Main {
 
     public sceneTimeScale = 1.0;
     public isEmbedMode = false;
+    private isFrameStep = false;
+    private pixelSize = 1;
 
     // Link to debugJunk so we can reference it from the DevTools.
     private debugJunk = debugJunk;
@@ -271,6 +289,8 @@ class Main {
         document.body.appendChild(this.toplevel);
 
         this.canvas = document.createElement('canvas');
+        this.canvas.style.imageRendering = 'pixelated';
+        this.canvas.style.outline = 'none';
 
         this.toplevel.appendChild(this.canvas);
         window.onresize = this._onResize.bind(this);
@@ -407,10 +427,15 @@ class Main {
                 }
             }
         }
+
         if (inputManager.isKeyDownEventTriggered('Numpad3'))
             this._exportSaveData();
         if (inputManager.isKeyDownEventTriggered('Period'))
             this.ui.togglePlayPause();
+        if (inputManager.isKeyDown('Comma')) {
+            this.ui.togglePlayPause(false);
+            this.isFrameStep = true;
+        }
     }
 
     private async _onWebXRStateRequested(state: boolean) {
@@ -444,8 +469,17 @@ class Main {
         // Needs to be called before this.viewer.update()
         const shouldTakeScreenshot = this.viewer.inputManager.isKeyDownEventTriggered('Numpad7') || this.viewer.inputManager.isKeyDownEventTriggered('BracketRight');
 
-        this.viewer.sceneTimeScale = this.ui.isPlaying ? this.sceneTimeScale : 0.0;
+        let sceneTimeScale = this.sceneTimeScale;
+        if (!this.ui.isPlaying) {
+            if (this.isFrameStep) {
+                sceneTimeScale /= 4.0;
+                this.isFrameStep = false;
+            } else {
+                sceneTimeScale = 0.0;
+            }
+        }
 
+        this.viewer.sceneTimeScale = sceneTimeScale;
         this.viewer.update(updateInfo);
 
         if (shouldTakeScreenshot)
@@ -480,7 +514,7 @@ class Main {
     }
 
     private _onResize() {
-        resizeCanvas(this.canvas, window.innerWidth, window.innerHeight, window.devicePixelRatio);
+        resizeCanvas(this.canvas, window.innerWidth, window.innerHeight, window.devicePixelRatio / this.pixelSize);
     }
 
     private _saveStateTmp = new Uint8Array(512);
@@ -654,9 +688,6 @@ class Main {
         // Force time to play when loading a map.
         this.ui.togglePlayPause(true);
 
-        const isInteractive = fallbackUndefined<boolean>(scene.isInteractive, true);
-        this.viewer.inputManager.isInteractive = isInteractive;
-
         const sceneDescId = this._getCurrentSceneDescId()!;
         this.saveManager.setCurrentSceneDescId(sceneDescId);
         this._saveStateAndUpdateURL();
@@ -741,6 +772,7 @@ class Main {
         this.ui.sceneUIContainer.appendChild(uiContainer);
         const destroyablePool: Destroyable[] = this.destroyablePool;
         const inputManager = this.viewer.inputManager;
+        inputManager.reset();
         const context: SceneContext = {
             device, dataFetcher, dataShare, uiContainer, destroyablePool, inputManager,
         };

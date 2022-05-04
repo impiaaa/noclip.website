@@ -10,6 +10,7 @@ import { GfxRenderCache } from "../gfx/render/GfxRenderCache";
 const enum ImageFormat {
     RGBA8888      = 0x00,
     ABGR8888      = 0x01,
+    RGB888        = 0x02,
     BGR888        = 0x03,
     I8            = 0x05,
     ARGB8888      = 0x0B,
@@ -25,6 +26,8 @@ const enum ImageFormat {
 
 function imageFormatIsBlockCompressed(fmt: ImageFormat): boolean {
     if (fmt === ImageFormat.DXT1)
+        return true;
+    if (fmt === ImageFormat.DXT3)
         return true;
     if (fmt === ImageFormat.DXT5)
         return true;
@@ -45,6 +48,8 @@ function imageFormatGetBPP(fmt: ImageFormat): number {
         return 4;
     if (fmt === ImageFormat.BGRX8888)
         return 4;
+    if (fmt === ImageFormat.RGB888)
+        return 3;
     if (fmt === ImageFormat.BGR888)
         return 3;
     if (fmt === ImageFormat.BGRA5551)
@@ -63,6 +68,8 @@ function imageFormatCalcLevelSize(fmt: ImageFormat, width: number, height: numbe
         const count = ((width * height) / 16) * depth;
         if (fmt === ImageFormat.DXT1)
             return count * 8;
+        else if (fmt === ImageFormat.DXT3)
+            return count * 16;
         else if (fmt === ImageFormat.DXT5)
             return count * 16;
         else
@@ -77,10 +84,12 @@ function imageFormatToGfxFormat(device: GfxDevice, fmt: ImageFormat, srgb: boole
     if (fmt === ImageFormat.DXT1)
         return srgb ? GfxFormat.BC1_SRGB : GfxFormat.BC1;
     else if (fmt === ImageFormat.DXT3)
-        return srgb ? GfxFormat.BC2_SRGB : GfxFormat.BC1;
+        return srgb ? GfxFormat.BC2_SRGB : GfxFormat.BC2;
     else if (fmt === ImageFormat.DXT5)
         return srgb ? GfxFormat.BC3_SRGB : GfxFormat.BC3;
     else if (fmt === ImageFormat.RGBA8888)
+        return srgb ? GfxFormat.U8_RGBA_SRGB : GfxFormat.U8_RGBA_NORM;
+    else if (fmt === ImageFormat.RGB888)
         return srgb ? GfxFormat.U8_RGBA_SRGB : GfxFormat.U8_RGBA_NORM;
     else if (fmt === ImageFormat.BGR888)
         return srgb ? GfxFormat.U8_RGBA_SRGB : GfxFormat.U8_RGBA_NORM;
@@ -113,6 +122,20 @@ function imageFormatConvertData(device: GfxDevice, fmt: ImageFormat, data: Array
             dst[i++] = src.getUint8(p + 2);
             dst[i++] = src.getUint8(p + 1);
             dst[i++] = src.getUint8(p + 0);
+            dst[i++] = 255;
+            p += 3;
+        }
+        return dst;
+    } else if (fmt === ImageFormat.RGB888) {
+        // RGB888 => RGBA8888
+        const src = data.createDataView();
+        const n = width * height * depth * 4;
+        const dst = new Uint8Array(n);
+        let p = 0;
+        for (let i = 0; i < n;) {
+            dst[i++] = src.getUint8(p + 0);
+            dst[i++] = src.getUint8(p + 1);
+            dst[i++] = src.getUint8(p + 2);
             dst[i++] = 255;
             p += 3;
         }
@@ -194,6 +217,11 @@ export const enum VTFFlags {
     ENVMAP        = 0x00004000,
 }
 
+interface VTFResourceEntry {
+    rsrcID: number;
+    data: ArrayBufferSlice;
+}
+
 export class VTF {
     public gfxTextures: GfxTexture[] = [];
     public gfxSampler: GfxSampler | null = null;
@@ -205,6 +233,8 @@ export class VTF {
     public depth: number = 1;
     public numFrames: number = 1;
     public numLevels: number = 1;
+
+    public resources: VTFResourceEntry[] = [];
 
     private versionMajor: number;
     private versionMinor: number;
@@ -223,6 +253,7 @@ export class VTF {
         const headerSize = view.getUint32(0x0C, true);
 
         let dataIdx: number;
+        let imageDataIdx: number = 0;
 
         if (this.versionMajor === 0x07) {
             assert(this.versionMinor >= 0x00);
@@ -251,21 +282,42 @@ export class VTF {
                 this.depth = 1;
             }
 
-            if (this.versionMinor >= 0x03) {
-                const numResources = view.getUint32(0x44, true);
-                let resourcesIdx = 0x50;
+            const numResources = this.versionMinor >= 0x03 ? view.getUint32(0x44, true) : 0;
+            if (numResources > 0) {
+                for (let i = 0; i < numResources; i++, dataIdx += 0x08) {
+                    const rsrcHeader = view.getUint32(dataIdx + 0x00, false);
+                    const rsrcID = (rsrcHeader & 0xFFFFFF00);
+                    const rsrcFlag = (rsrcHeader & 0x000000FF);
+                    const dataOffs = view.getUint32(dataIdx + 0x04, true);
 
-                for (let i = 0; i < numResources; i++) {
-                    resourcesIdx += 0x08;
+                    // RSRCFHAS_NO_DATA_CHUNK
+                    if (rsrcFlag === 0x02)
+                        continue;
+
+                    // Legacy resources don't have a size tag.
+
+                    if (rsrcID === 0x01000000) { // VTF_LEGACY_RSRC_LOW_RES_IMAGE
+                        // Skip.
+                        continue;
+                    }
+
+                    if (rsrcID === 0x30000000) { // VTF_LEGACY_RSRC_IMAGE
+                        imageDataIdx = dataOffs;
+                        continue;
+                    }
+
+                    const dataSize = view.getUint32(dataOffs + 0x00, true);
+                    const data = buffer.subarray(dataOffs + 0x04, dataSize);
+                    this.resources.push({ rsrcID, data });
+                }
+            } else {
+                if (lowresImageFormat !== 0xFFFFFFFF) {
+                    const lowresDataSize = imageFormatCalcLevelSize(lowresImageFormat, lowresImageWidth, lowresImageHeight, 1);
+                    const lowresData = buffer.subarray(dataIdx, lowresDataSize);
+                    dataIdx += lowresDataSize;
                 }
 
-                dataIdx = resourcesIdx;
-            }
-
-            if (lowresImageFormat !== 0xFFFFFFFF) {
-                const lowresDataSize = imageFormatCalcLevelSize(lowresImageFormat, lowresImageWidth, lowresImageHeight, 1);
-                const lowresData = buffer.subarray(dataIdx, lowresDataSize);
-                dataIdx += lowresDataSize;
+                imageDataIdx = dataIdx;
             }
         } else {
             throw "whoops";
@@ -303,8 +355,8 @@ export class VTF {
             const faceSize = this.calcMipSize(i);
             const size = faceSize * faceCount;
             for (let j = 0; j < this.gfxTextures.length; j++) {
-                const levelData = imageFormatConvertData(device, this.format, buffer.subarray(dataIdx, size), mipWidth, mipHeight, this.depth * faceCount);
-                dataIdx += faceSize * faceDataCount;
+                const levelData = imageFormatConvertData(device, this.format, buffer.subarray(imageDataIdx, size), mipWidth, mipHeight, this.depth * faceCount);
+                imageDataIdx += faceSize * faceDataCount;
                 levelDatas[j].unshift(levelData);
             }
         }

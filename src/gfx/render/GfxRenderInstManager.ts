@@ -8,7 +8,6 @@ import { defaultMegaState, copyMegaState, setMegaStateFlags } from "../helpers/G
 
 import { GfxRenderCache } from "./GfxRenderCache";
 import { GfxRenderDynamicUniformBuffer } from "./GfxRenderDynamicUniformBuffer";
-import { IS_DEVELOPMENT } from "../../BuildVersion";
 
 // The "Render" subsystem provides high-level scene graph utiltiies, built on top of gfx/platform and gfx/helpers. A
 // rough overview of the design:
@@ -144,15 +143,6 @@ export function setSortKeyDepth(sortKey: number, depth: number, maxDepth: number
     const depthKey = makeDepthKey(depth, isTranslucent, maxDepth);
     return isTranslucent ? setSortKeyTranslucentDepth(sortKey, depthKey) : setSortKeyOpaqueDepth(sortKey, depthKey);
 }
-
-export function getSortKeyDepth(sortKey: number): number {
-    const isTranslucent = !!((sortKey >>> 31) & 1);
-    if (isTranslucent)
-        return (sortKey >>> 8) & 0xFFFF;
-    else {
-        return ((sortKey >>> 8) & 0xFFFC | (sortKey & 0x03));
-    }
-}
 //#endregion
 
 //#region GfxRenderInst
@@ -252,6 +242,15 @@ export class GfxRenderInst {
         this.setSamplerBindingsFromTextureMappings(obd.samplerBindings);
         for (let i = 0; i < o._dynamicUniformBufferByteOffsets.length; i++)
             this._dynamicUniformBufferByteOffsets[i] = o._dynamicUniformBufferByteOffsets[i];
+    }
+
+    public validate(): void {
+        // Validate uniform buffer bindings.
+        for (let i = 0; i < this._bindingDescriptors.length; i++) {
+            const bd = this._bindingDescriptors[i];
+            for (let j = 0; j < bd.bindingLayout.numUniformBuffers; j++)
+                assert(bd.uniformBufferBindings[j].wordCount > 0);
+        }
     }
 
     /**
@@ -493,7 +492,7 @@ export class GfxRenderInst {
         this._renderPipelineDescriptor.sampleCount = sampleCount;
     }
 
-    public drawOnPass(cache: GfxRenderCache, passRenderer: GfxRenderPass): boolean {
+    public drawOnPass(cache: GfxRenderCache, passRenderer: GfxRenderPass): void {
         const device = cache.device;
         this.setAttachmentFormatsFromRenderPass(device, passRenderer);
 
@@ -502,13 +501,12 @@ export class GfxRenderInst {
         const pipelineReady = device.pipelineQueryReady(gfxPipeline);
         if (!pipelineReady) {
             if (!!(this._flags & GfxRenderInstFlags.AllowSkippingIfPipelineNotReady))
-                return false;
+                return;
 
             device.pipelineForceReady(gfxPipeline);
         }
 
         passRenderer.setPipeline(gfxPipeline);
-
         passRenderer.setInputState(this._inputState);
 
         for (let i = 0; i < this._bindingDescriptors[0].uniformBufferBindings.length; i++)
@@ -526,8 +524,6 @@ export class GfxRenderInst {
         } else {
             passRenderer.draw(this._drawCount, this._drawStart);
         }
-
-        return true;
     }
 }
 //#endregion
@@ -582,6 +578,7 @@ export class GfxRenderInstList {
     }
 
     public submitRenderInst(renderInst: GfxRenderInst): void {
+        renderInst.validate();
         renderInst._flags |= GfxRenderInstFlags.Draw;
         this.insertSorted(renderInst);
     }
@@ -610,21 +607,16 @@ export class GfxRenderInstList {
         }
     }
 
-    private drawOnPassRendererNoReset(cache: GfxRenderCache, passRenderer: GfxRenderPass): number {
+    private drawOnPassRendererNoReset(cache: GfxRenderCache, passRenderer: GfxRenderPass): void {
         this.ensureSorted();
 
-        let numDrawn = 0;
         if (this.executionOrder === GfxRenderInstExecutionOrder.Forwards) {
             for (let i = 0; i < this.renderInsts.length; i++)
-                if (this.renderInsts[i].drawOnPass(cache, passRenderer))
-                    numDrawn++;
+                this.renderInsts[i].drawOnPass(cache, passRenderer);
         } else {
             for (let i = this.renderInsts.length - 1; i >= 0; i--)
-                if (this.renderInsts[i].drawOnPass(cache, passRenderer))
-                    numDrawn++;
+                this.renderInsts[i].drawOnPass(cache, passRenderer);
         }
-
-        return numDrawn;
     }
 
     public reset(): void {
@@ -636,10 +628,9 @@ export class GfxRenderInstList {
      * using {@param device} and {@param cache} to create any device-specific resources
      * necessary to complete the draws.
      */
-    public drawOnPassRenderer(cache: GfxRenderCache, passRenderer: GfxRenderPass): number {
-        const numDrawn = this.drawOnPassRendererNoReset(cache, passRenderer);
+    public drawOnPassRenderer(cache: GfxRenderCache, passRenderer: GfxRenderPass): void {
+        this.drawOnPassRendererNoReset(cache, passRenderer);
         this.reset();
-        return numDrawn;
     }
 }
 //#endregion

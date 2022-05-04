@@ -7,10 +7,10 @@ import * as RARC from '../Common/JSYSTEM/JKRArchive';
 import ArrayBufferSlice from '../ArrayBufferSlice';
 import { readString, assert, assertExists } from '../util';
 
-import { J3DModelData, BMDModelMaterialData } from '../Common/JSYSTEM/J3D/J3DGraphBase';
+import { J3DModelData, J3DModelMaterialData, J3DModelInstance } from '../Common/JSYSTEM/J3D/J3DGraphBase';
 import { J3DModelInstanceSimple } from '../Common/JSYSTEM/J3D/J3DGraphSimple';
 import * as JPA from '../Common/JSYSTEM/JPA';
-import { Light, lightSetWorldPosition, EFB_WIDTH, EFB_HEIGHT } from '../gx/gx_material';
+import { lightSetWorldPosition, EFB_WIDTH, EFB_HEIGHT, Light } from '../gx/gx_material';
 import { mat4, quat, vec3 } from 'gl-matrix';
 import { LoopMode, BMD, BMT, BCK, BPK, BTP, BTK, BRK } from '../Common/JSYSTEM/J3D/J3DLoader';
 import { GXRenderHelperGfx, fillSceneParamsDataOnTemplate } from '../gx/gx_render';
@@ -23,6 +23,7 @@ import { createModelInstance } from './scenes';
 import { GfxrAttachmentSlot } from '../gfx/render/GfxRenderGraph';
 import { executeOnPass, hasAnyVisible } from '../gfx/render/GfxRenderInstManager';
 import { gfxDeviceNeedsFlipY } from '../gfx/helpers/GfxDeviceHelpers';
+import { Camera } from '../Camera';
 import { transformVec3Mat4w1 } from '../MathHelpers';
 
 const sjisDecoder = new TextDecoder('sjis')!;
@@ -456,6 +457,45 @@ export const enum SMSPass {
     TRANSPARENT = 1 << 3,
 }
 
+class LightConfig {
+    public lightObj: SceneBinObjLight[] = [];
+
+    private LARGE_NUMBER = -1048576.0;
+    private initSpecularDir(lit: Light, nx: number, ny: number, nz: number) {
+        // Compute half-angle vector
+        const hx = -nx, hy = -ny, hz = -(nz - 1.0);
+        vec3.set(lit.Direction, hx, hy, hz);
+        vec3.normalize(lit.Direction, lit.Direction);
+
+        const px  = (nx * this.LARGE_NUMBER);
+        const py  = (ny * this.LARGE_NUMBER);
+        const pz  = (nz * this.LARGE_NUMBER);
+        
+        vec3.set(lit.Position, px, py, pz);
+    }
+    private scratchVec3 = vec3.create();
+
+    public setOnModelInstance(modelInstance: J3DModelInstance, camera: Camera): void {
+        const diffSrc = this.lightObj[0];
+        const diffDst = modelInstance.getGXLightReference(0);
+        lightSetWorldPosition(diffDst, camera, diffSrc.x, diffSrc.y, diffSrc.z);
+        colorFromRGBA(diffDst.Color, diffSrc.r/0xFF, diffSrc.g/0xFF, diffSrc.b/0xFF, diffSrc.a/0xFF);
+        vec3.set(diffDst.CosAtten, 1.0, 0.0, 0.0);
+        vec3.set(diffDst.DistAtten, 1.0, 0.0, 0.0);
+        
+        const specSrc = this.lightObj[2];
+        const specDst = modelInstance.getGXLightReference(2);
+        const v = this.scratchVec3;
+        vec3.set(v, specSrc.x, specSrc.y, specSrc.z);
+        transformVec3Mat4w1(v, camera.viewMatrix, v);
+        vec3.normalize(v, v);
+        this.initSpecularDir(specDst, -v[0], -v[1], -v[2]);
+        colorFromRGBA(specDst.Color, specSrc.r/0xFF, specSrc.g/0xFF, specSrc.b/0xFF, specSrc.a/0xFF);
+        vec3.set(specDst.CosAtten, 0.0, 0.0, 1.0);
+        vec3.set(specDst.DistAtten, 0.5*specSrc.intensity, 0.0, 1.0 - 0.5*specSrc.intensity);
+    }
+}
+
 export class SunshineRenderer implements Viewer.SceneGfx {
     public renderHelper: GXRenderHelperGfx;
     public modelInstances: J3DModelInstanceSimple[] = [];
@@ -464,9 +504,7 @@ export class SunshineRenderer implements Viewer.SceneGfx {
     public effectsCache = new Map<RARC.RARCFile, JPA.JPACData>();
     private clearDescriptor = makeAttachmentClearDescriptor(colorNewCopy(OpaqueBlack));
 
-    public lightAry: SceneBinObjGroup;
-    public playerLightIndex = -1;
-    public objectsLightIndex = -1;
+    public objLightConfig: LightConfig | null = null;
 
     constructor(device: GfxDevice, public rarc: RARC.JKRArchive) {
         this.renderHelper = new GXRenderHelperGfx(device);
@@ -526,20 +564,9 @@ export class SunshineRenderer implements Viewer.SceneGfx {
     protected prepareToRender(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
         const template = this.renderHelper.pushTemplateRenderInst();
         fillSceneParamsDataOnTemplate(template, viewerInput);
-        if (this.objectsLightIndex !== -1) {
-            const objectsLight = this.lightAry.children[this.objectsLightIndex] as SceneBinObjLight;
-            for (let i = 0; i < this.modelInstances.length; i++) {
-                const gxLightDiffuse = this.modelInstances[i].getGXLightReference(0);
-                lightSetWorldPosition(gxLightDiffuse, viewerInput.camera, objectsLight.x, objectsLight.y, objectsLight.z);
-                
-                const gxLightSpecular = this.modelInstances[i].getGXLightReference(2);
-                const v = this.scratchVec3;
-                vec3.set(v, objectsLight.x, objectsLight.y, objectsLight.z);
-                transformVec3Mat4w1(v, viewerInput.camera.viewMatrix, v);
-                vec3.normalize(v, v);
-                this.initSpecularDir(gxLightSpecular, -v[0], -v[1], -v[2]);
-            }
-        }
+        if (this.objLightConfig !== null)
+            for (let i = 0; i < this.modelInstances.length; i++)
+                this.objLightConfig.setOnModelInstance(this.modelInstances[i], viewerInput.camera);
         for (let i = 0; i < this.modelInstances.length; i++)
             this.modelInstances[i].prepareToRender(device, this.renderHelper.renderInstManager, viewerInput);
         this.renderHelper.renderInstManager.popTemplateRenderInst();
@@ -617,21 +644,6 @@ export class SunshineRenderer implements Viewer.SceneGfx {
         for (const v of this.modelCache.values())
             v.destroy(device);
     }
-
-    public setUpDiffuseLight(modelInstance: J3DModelInstanceSimple) {
-        if (this.objectsLightIndex !== -1) {
-            const objectsLight = this.lightAry.children[this.objectsLightIndex] as SceneBinObjLight;
-            const gxLightDiffuse = modelInstance.getGXLightReference(0);
-            colorFromRGBA(gxLightDiffuse.Color, objectsLight.r/255, objectsLight.g/255, objectsLight.b/255, objectsLight.a/255);
-            vec3.set(gxLightDiffuse.CosAtten, 1.0, 0.0, 0.0);
-            vec3.set(gxLightDiffuse.DistAtten, 1.0, 0.0, 0.0);
-            
-            const gxLightSpecular = modelInstance.getGXLightReference(2);
-            colorFromRGBA(gxLightSpecular.Color, objectsLight.r/255, objectsLight.g/255, objectsLight.b/255, objectsLight.a/255);
-            vec3.set(gxLightSpecular.CosAtten, 0.0, 0.0, 1.0);
-            vec3.set(gxLightSpecular.DistAtten, 0.5*objectsLight.intensity, 0.0, 1.0 - 0.5*objectsLight.intensity);
-        }
-    }
 }
         
 
@@ -689,7 +701,6 @@ export class SunshineSceneDesc implements Viewer.SceneDesc {
             this.createSceneBinObjects(device, cache, renderer, rarc, sceneBinObj);
             
             for (let i = 0; i < renderer.modelInstances.length; i++) {
-                renderer.setUpDiffuseLight(renderer.modelInstances[i]);
                 this.setUpAmbientLight(renderer.modelInstances[i]);
             }
             
@@ -701,9 +712,10 @@ export class SunshineSceneDesc implements Viewer.SceneDesc {
         if (obj.type === 'Group') {
             obj.children.forEach(c => this.createSceneBinObjects(device, cache, renderer, rarc, c));
             if (obj.klass === 'LightAry') {
-                renderer.lightAry = obj;
-                renderer.objectsLightIndex = obj.children.findIndex((light) => light.name === "太陽（オブジェクト）");
-                renderer.playerLightIndex = obj.children.findIndex((light) => light.name === "太陽（プレイヤー）");
+                renderer.objLightConfig = new LightConfig();
+                renderer.objLightConfig.lightObj[0] = assertExists(obj.children.find((light) => light.name === "太陽（オブジェクト）")) as SceneBinObjLight;
+                renderer.objLightConfig.lightObj[1] = assertExists(obj.children.find((light) => light.name === "太陽サブ（オブジェクト）")) as SceneBinObjLight;
+                renderer.objLightConfig.lightObj[2] = assertExists(obj.children.find((light) => light.name === "太陽スペキュラ（オブジェクト）")) as SceneBinObjLight;
             } else if (obj.klass === 'AmbAry') {
                 this.ambAry = obj;
                 this.objectsAmbIndex = obj.children.findIndex((ambColor) => ambColor.name === "太陽アンビエント（オブジェクト）");
@@ -986,7 +998,7 @@ export class SunshineSceneDesc implements Viewer.SceneDesc {
             const bmtFilename = `mapobj/${modelEntry.t.toLowerCase()}.bmt`;
             const bmtFile = rarc.findFile(bmtFilename);
             if (bmtFile !== null) {
-                const modelMaterialData = new BMDModelMaterialData(device, cache, BMT.parse(bmtFile.buffer));
+                const modelMaterialData = new J3DModelMaterialData(device, cache, BMT.parse(bmtFile.buffer));
                 renderer.destroyables.push(modelMaterialData);
                 scene.setModelMaterialData(modelMaterialData);
             }

@@ -6,7 +6,7 @@ import { TDDraw } from "../SuperMarioGalaxy/DDraw";
 import * as GX from '../gx/gx_enum';
 import * as GX_Material from '../gx/gx_material';
 import { GXMaterialBuilder } from '../gx/GXMaterialBuilder';
-import { PacketParams, GXMaterialHelperGfx, MaterialParams, fillSceneParamsDataOnTemplate, SceneParams, fillSceneParams, fillSceneParamsData, GXRenderHelperGfx } from '../gx/gx_render';
+import { DrawParams, GXMaterialHelperGfx, MaterialParams, fillSceneParamsDataOnTemplate, SceneParams, fillSceneParams, fillSceneParamsData, GXRenderHelperGfx } from '../gx/gx_render';
 import { getMatrixAxisZ } from '../MathHelpers';
 
 import { ObjectRenderContext } from './objects';
@@ -14,11 +14,9 @@ import { SceneRenderContext, SFARenderLists, setGXMaterialOnRenderInst } from '.
 import { vecPitch } from './util';
 import { getCamPos } from './util';
 import { World } from './world';
-import { createDirectionalLight, Light, LightType } from './WorldLights';
-import { colorCopy, colorNewCopy, colorScale, White } from '../Color';
 
 const materialParams = new MaterialParams();
-const packetParams = new PacketParams();
+const drawParams = new DrawParams();
 const scratchVec0 = vec3.create();
 const scratchSceneParams = new SceneParams();
 
@@ -29,8 +27,6 @@ export class Sky {
     constructor(private world: World) {
         this.skyddraw.setVtxDesc(GX.Attr.POS, true);
         this.skyddraw.setVtxDesc(GX.Attr.TEX0, true);
-        this.skyddraw.setVtxAttrFmt(GX.VtxFmt.VTXFMT0, GX.Attr.POS, GX.CompCnt.POS_XYZ);
-        this.skyddraw.setVtxAttrFmt(GX.VtxFmt.VTXFMT0, GX.Attr.TEX0, GX.CompCnt.TEX_ST);
 
         const mb = new GXMaterialBuilder();
         mb.setTexCoordGen(GX.TexCoordID.TEXCOORD0, GX.TexGenType.MTX2x4, GX.TexGenSrc.TEX0, GX.TexGenMatrix.IDENTITY);
@@ -99,8 +95,8 @@ export class Sky {
 
         const renderInst = this.skyddraw.makeRenderInst(renderInstManager);
 
-        packetParams.clear();
-        setGXMaterialOnRenderInst(device, renderInstManager, renderInst, this.materialHelperSky, materialParams, packetParams);
+        drawParams.clear();
+        setGXMaterialOnRenderInst(device, renderInstManager, renderInst, this.materialHelperSky, materialParams, drawParams);
 
         this.skyddraw.endAndUpload(renderInstManager);
 
@@ -108,7 +104,6 @@ export class Sky {
         
         builder.pushPass((pass) => {
             pass.setDebugName('Atmosphere');
-            pass.setViewport(sceneCtx.viewerInput.viewport);
             pass.attachRenderTargetID(GfxrAttachmentSlot.Color0, mainColorTargetID);
             pass.exec((passRenderer) => {
                 renderInst.drawOnPass(renderInstManager.gfxRenderCache, passRenderer);
@@ -147,7 +142,6 @@ export class Sky {
 
         builder.pushPass((pass) => {
             pass.setDebugName('Skyscape');
-            pass.setViewport(sceneCtx.viewerInput.viewport);
             pass.attachRenderTargetID(GfxrAttachmentSlot.Color0, mainColorTargetID);
             const skyDepthTargetID = builder.createRenderTargetID(depthDesc, 'Skyscape Depth');
             pass.attachRenderTargetID(GfxrAttachmentSlot.DepthStencil, skyDepthTargetID);

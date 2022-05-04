@@ -4,16 +4,15 @@
 import { mat4, quat, ReadonlyMat4, ReadonlyQuat, ReadonlyVec3, vec2, vec3 } from "gl-matrix";
 import { Camera, texProjCameraSceneTex } from "../Camera";
 import { J3DFrameCtrl__UpdateFlags } from "../Common/JSYSTEM/J3D/J3DGraphAnimator";
-import { J3DModelData } from "../Common/JSYSTEM/J3D/J3DGraphBase";
+import { J3DModelData, J3DModelInstance } from "../Common/JSYSTEM/J3D/J3DGraphBase";
 import { JKRArchive } from "../Common/JSYSTEM/JKRArchive";
 import { BTI, BTIData } from "../Common/JSYSTEM/JUTTexture";
-import { GfxNormalizedViewportCoords } from "../gfx/platform/GfxPlatform";
 import { GfxRenderInstManager } from "../gfx/render/GfxRenderInstManager";
 import { computeMatrixWithoutScale, computeModelMatrixR, computeModelMatrixT, getMatrixAxis, getMatrixAxisX, getMatrixAxisY, getMatrixAxisZ, getMatrixTranslation, isNearZero, isNearZeroVec3, lerp, MathConstants, normToLength, randomRange, saturate, scaleMatrix, setMatrixAxis, setMatrixTranslation, transformVec3Mat4w0, Vec3UnitX, Vec3UnitY, Vec3UnitZ, Vec3Zero } from "../MathHelpers";
 import { assert, assertExists } from "../util";
 import { getRes, XanimePlayer } from "./Animation";
 import { AreaObj, isInAreaObj } from "./AreaObj";
-import { CollisionParts, CollisionPartsFilterFunc, CollisionScaleType, getBindedFixReactionVector, getFirstPolyOnLineToMapExceptActor, invalidateCollisionParts, isBinded, isFloorPolygonAngle, isOnGround, isWallPolygonAngle, Triangle, validateCollisionParts } from "./Collision";
+import { CollisionParts, CollisionPartsFilterFunc, CollisionScaleType, getBindedFixReactionVector, getFirstPolyOnLineToMapExceptActor, getGroundNormal, invalidateCollisionParts, isBinded, isFloorPolygonAngle, isOnGround, isWallPolygonAngle, Triangle, validateCollisionParts } from "./Collision";
 import { GravityInfo, GravityTypeMask } from "./Gravity";
 import { HitSensor, sendMsgPush } from "./HitSensor";
 import { getJMapInfoScale, JMapInfoIter } from "./JMapInfo";
@@ -28,7 +27,8 @@ const scratchVec3a = vec3.create();
 const scratchVec3b = vec3.create();
 const scratchVec3c = vec3.create();
 const scratchMatrix = mat4.create();
-const scratchQuat = quat.create();
+const scratchQuata = quat.create();
+const scratchQuatb = quat.create();
 
 export function connectToScene(sceneObjHolder: SceneObjHolder, nameObj: NameObj, movementType: MovementType, calcAnimType: CalcAnimType, drawBufferType: DrawBufferType, drawType: DrawType): void {
     sceneObjHolder.sceneNameObjListExecutor.registerActor(nameObj, movementType, calcAnimType, drawBufferType, drawType);
@@ -736,7 +736,7 @@ export function moveCoord(actor: LiveActor, speed: number | null = null): void {
     actor.railRider!.move();
 }
 
-export function moveCoordAndFollowTrans(actor: LiveActor, speed: number): void {
+export function moveCoordAndFollowTrans(actor: LiveActor, speed: number | null = null): void {
     moveCoord(actor, speed);
     vec3.copy(actor.translation, actor.railRider!.currentPos);
 }
@@ -889,8 +889,8 @@ export function isValidDraw(actor: LiveActor): boolean {
     return actor.visibleAlive && actor.visibleScenario && actor.visibleModel;
 }
 
-export function loadTexProjectionMtx(m: mat4, camera: Camera, viewport: Readonly<GfxNormalizedViewportCoords>): void {
-    texProjCameraSceneTex(m, camera, viewport, -1);
+export function loadTexProjectionMtx(m: mat4, camera: Camera): void {
+    texProjCameraSceneTex(m, camera, -1);
     mat4.mul(m, m, camera.viewMatrix);
 }
 
@@ -933,9 +933,7 @@ export function isZeroGravity(sceneObjHolder: SceneObjHolder, actor: LiveActor):
 
 export function makeMtxTRFromQuatVec(dst: mat4, q: ReadonlyQuat, translation: ReadonlyVec3): void {
     mat4.fromQuat(dst, q);
-    dst[12] = translation[0];
-    dst[13] = translation[1];
-    dst[14] = translation[2];
+    setMatrixTranslation(dst, translation);
 }
 
 export function setMtxAxisXYZ(dst: mat4, x: ReadonlyVec3, y: ReadonlyVec3, z: ReadonlyVec3): void {
@@ -1179,8 +1177,8 @@ export function blendQuatUpFront(dst: quat, q: ReadonlyQuat, up: ReadonlyVec3, f
     quatGetAxisY(axisY, q);
     if (vec3.dot(axisY, up) < 0.0 && isSameDirection(axisY, up, 0.01))
         turnRandomVector(axisY, axisY, 0.001);
-    quatSetRotate(scratchQuat, axisY, up, speedUp, scratch);
-    quat.mul(dst, scratchQuat, q);
+    quatSetRotate(scratchQuata, axisY, up, speedUp, scratch);
+    quat.mul(dst, scratchQuata, q);
 
     quatGetAxisY(axisY, dst);
     vecKillElement(axisY, front, axisY);
@@ -1190,8 +1188,8 @@ export function blendQuatUpFront(dst: quat, q: ReadonlyQuat, up: ReadonlyVec3, f
     if (vec3.dot(axisZ, axisY) < 0.0 && isSameDirection(axisZ, axisY, 0.01))
         turnRandomVector(axisZ, axisZ, 0.001);
 
-    quatSetRotate(scratchQuat, axisZ, axisY, speedFront, scratch);
-    quat.mul(dst, scratchQuat, dst);
+    quatSetRotate(scratchQuata, axisZ, axisY, speedFront, scratch);
+    quat.mul(dst, scratchQuata, dst);
     quat.normalize(dst, dst);
     quatGetAxisZ(scratch, dst);
 }
@@ -1213,8 +1211,8 @@ export function turnQuat(dst: quat, q: ReadonlyQuat, v0: ReadonlyVec3, v1: Reado
     else
         turn = 1.0;
 
-    quatSetRotate(scratchQuat, scratchVec3a, scratchVec3b, turn);
-    quat.mul(dst, scratchQuat, q);
+    quatSetRotate(scratchQuata, scratchVec3a, scratchVec3b, turn);
+    quat.mul(dst, scratchQuata, q);
     quat.normalize(dst, dst);
 
     return theta < 0.015;
@@ -1359,13 +1357,10 @@ export function useStageSwitchReadAppear(sceneObjHolder: SceneObjHolder, actor: 
 }
 
 export function syncStageSwitchAppear(sceneObjHolder: SceneObjHolder, actor: LiveActor): void {
-    // XXX(jstpierre): How is SW_APPEAR *actually* different from Sleep, except for the vfunc used?
-
-    // NOTE(jstpierre): ActorAppearSwitchListener is calls appear/kill vfunc instead, but
-    // I can't see the motivation behind these two different vfuncs tbqh.
+    // NOTE(jstpierre): ActorAppearSwitchListener calls appear/kill vfunc instead.
 
     // Also, ActorAppearSwitchListener can turn off one or both of these vfuncs, but syncStageSwitchAppear
-    // does never do that, so we emulate it with a functor listener.
+    // never does that, so we emulate it with a functor listener.
     const switchOn = (sceneObjHolder: SceneObjHolder) => actor.makeActorAppeared(sceneObjHolder);
     const switchOff = (sceneObjHolder: SceneObjHolder) => actor.makeActorDead(sceneObjHolder);
     const eventListener = new SwitchFunctorEventListener(switchOn, switchOff);
@@ -1457,10 +1452,6 @@ export function getGroupFromArray<T extends LiveActor>(sceneObjHolder: SceneObjH
     return sceneObjHolder.liveActorGroupArray.getLiveActorGroup(nameObj);
 }
 
-function getGroundNormal(actor: LiveActor): vec3 {
-    return actor.binder!.floorHitInfo.faceNormal;
-}
-
 function calcVelocityMoveToDirectionHorizon(dst: vec3, actor: LiveActor, direction: ReadonlyVec3, speed: number): void {
     vecKillElement(dst, direction, actor.gravityVector);
     normToLength(dst, speed);
@@ -1477,6 +1468,18 @@ export function addVelocityMoveToDirection(actor: LiveActor, direction: Readonly
     vec3.add(actor.velocity, actor.velocity, scratchVec3);
 }
 
+export function addVelocityMoveToTarget(actor: LiveActor, target: ReadonlyVec3, speed: number): void {
+    vec3.sub(scratchVec3, target, actor.translation);
+    calcVelocityMoveToDirection(scratchVec3, actor, scratchVec3, speed);
+    vec3.add(actor.velocity, actor.velocity, scratchVec3);
+}
+
+export function addVelocityAwayFromTarget(actor: LiveActor, target: ReadonlyVec3, speed: number): void {
+    vec3.sub(scratchVec3, actor.translation, target);
+    calcVelocityMoveToDirection(scratchVec3, actor, scratchVec3, speed);
+    vec3.add(actor.velocity, actor.velocity, scratchVec3);
+}
+
 function calcMomentRollBall(dst: vec3, fwd: ReadonlyVec3, up: ReadonlyVec3, radius: number): void {
     vec3.normalize(dst, up);
     vec3.cross(dst, dst, fwd);
@@ -1487,13 +1490,12 @@ export function rotateQuatRollBall(dst: quat, fwd: ReadonlyVec3, up: ReadonlyVec
     calcMomentRollBall(scratchVec3, fwd, up, radius);
     const rollAmount = vec3.length(scratchVec3);
     vec3.normalize(scratchVec3, scratchVec3);
-    quat.setAxisAngle(scratchQuat, scratchVec3, rollAmount);
-    quat.mul(dst, scratchQuat, dst);
+    quat.setAxisAngle(scratchQuata, scratchVec3, rollAmount);
+    quat.mul(dst, scratchQuata, dst);
 }
 
 export function hideMaterial(actor: LiveActor, materialName: string): void {
-    const materialInstance = assertExists(actor.modelInstance!.materialInstances.find((m) => m.materialData.material.name === materialName));
-    materialInstance.visible = false;
+    actor.modelInstance!.setMaterialVisible(materialName, false);
 }
 
 export function calcActorAxis(axisX: vec3 | null, axisY: vec3 | null, axisZ: vec3 | null, actor: LiveActor): void {
@@ -1885,5 +1887,35 @@ export function drawSimpleModel(renderInstManager: GfxRenderInstManager, modelDa
         shape.shapeHelper.setOnRenderInst(renderInst, shape.draws[0]);
 
         renderInstManager.submitRenderInst(renderInst);
+    }
+}
+
+export function blendMtx(dst: mat4, a: ReadonlyMat4, b: ReadonlyMat4, t: number): void {
+    quatFromMat4(scratchQuata, a);
+    quatFromMat4(scratchQuatb, b);
+    quat.slerp(scratchQuata, scratchQuata, scratchQuatb, t);
+    getMatrixTranslation(scratchVec3a, a);
+    getMatrixTranslation(scratchVec3b, b);
+    vec3.lerp(scratchVec3a, scratchVec3a, scratchVec3b, t);
+    mat4.fromQuat(dst, scratchQuata);
+    setMatrixTranslation(dst, scratchVec3a);
+}
+
+export class ProjmapEffectMtxSetter {
+    private effectMtx = mat4.create();
+
+    constructor(private model: J3DModelInstance) {
+        for (let i = 0; i < this.model.materialInstances.length; i++)
+            this.model.materialInstances[i].effectMtx = this.effectMtx;
+    }
+
+    public updateMtxUseBaseMtx(): void {
+        mat4.invert(this.effectMtx, this.model.modelMatrix);
+    }
+
+    public updateMtxUseBaseMtxWithLocalOffset(offset: ReadonlyVec3): void {
+        mat4.fromTranslation(scratchMatrix, offset);
+        mat4.mul(scratchMatrix, scratchMatrix, this.model.modelMatrix);
+        mat4.invert(this.effectMtx, scratchMatrix);
     }
 }

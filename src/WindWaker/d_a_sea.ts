@@ -11,7 +11,7 @@ import { ResType } from "./d_resorce";
 import { GfxRenderInstManager } from "../gfx/render/GfxRenderInstManager";
 import { ViewerRenderInput } from "../viewer";
 import { TDDraw } from "../SuperMarioGalaxy/DDraw";
-import { GXMaterialHelperGfx, MaterialParams, PacketParams, ColorKind } from '../gx/gx_render';
+import { GXMaterialHelperGfx, MaterialParams, DrawParams, ColorKind } from '../gx/gx_render';
 import { GXMaterialBuilder } from '../gx/GXMaterialBuilder';
 import { dKy_get_seacolor, dKy_GxFog_sea_set } from './d_kankyo';
 import { colorLerp, OpaqueBlack } from '../Color';
@@ -186,7 +186,7 @@ function GetLenBox2D(min: ReadonlyVec2, max: ReadonlyVec2, pos: vec2): number {
 }
 
 const materialParams = new MaterialParams();
-const packetParams = new PacketParams();
+const drawParams = new DrawParams();
 
 export class d_a_sea extends fopAc_ac_c {
     public static PROCESS_NAME = fpc__ProcessName.d_a_sea;
@@ -214,7 +214,7 @@ export class d_a_sea extends fopAc_ac_c {
     private ddraw = new TDDraw();
     private materialHelper: GXMaterialHelperGfx;
 
-    public subload(globals: dGlobals): cPhs__Status {
+    public override subload(globals: dGlobals): cPhs__Status {
         this.waveInfo = new daSea_WaveInfo(globals);
 
         const resCtrl = globals.resCtrl;
@@ -229,8 +229,6 @@ export class d_a_sea extends fopAc_ac_c {
 
         this.ddraw.setVtxDesc(GX.Attr.POS, true);
         this.ddraw.setVtxDesc(GX.Attr.TEX0, true);
-        this.ddraw.setVtxAttrFmt(GX.VtxFmt.VTXFMT0, GX.Attr.POS, GX.CompCnt.POS_XYZ);
-        this.ddraw.setVtxAttrFmt(GX.VtxFmt.VTXFMT0, GX.Attr.TEX0, GX.CompCnt.TEX_ST);
 
         const mb = new GXMaterialBuilder(`d_a_sea`);
         mb.setCullMode(GX.CullMode.BACK);
@@ -430,7 +428,7 @@ export class d_a_sea extends fopAc_ac_c {
         }
     }
 
-    public draw(globals: dGlobals, renderInstManager: GfxRenderInstManager, viewerInput: ViewerRenderInput): void {
+    public override draw(globals: dGlobals, renderInstManager: GfxRenderInstManager, viewerInput: ViewerRenderInput): void {
         renderInstManager.setCurrentRenderInstList(globals.dlst.sea);
 
         this.ddraw.beginDraw();
@@ -569,8 +567,8 @@ export class d_a_sea extends fopAc_ac_c {
         materialHelper.setOnRenderInst(device, renderInstManager.gfxRenderCache, renderInst);
         renderInst.setSamplerBindingsFromTextureMappings(materialParams.m_TextureMapping);
         materialHelper.allocateMaterialParamsDataOnInst(renderInst, materialParams);
-        mat4.copy(packetParams.u_PosMtx[0], viewerInput.camera.viewMatrix);
-        materialHelper.allocatePacketParamsDataOnInst(renderInst, packetParams);
+        mat4.copy(drawParams.u_PosMtx[0], viewerInput.camera.viewMatrix);
+        materialHelper.allocateDrawParamsDataOnInst(renderInst, drawParams);
         renderInstManager.submitRenderInst(renderInst);
     }
 
@@ -581,7 +579,7 @@ export class d_a_sea extends fopAc_ac_c {
     private fadeTable = nArray(65, () => 0);
 
     private copyPos = true;
-    public execute(globals: dGlobals, deltaTimeInFrames: number): void {
+    public override execute(globals: dGlobals, deltaTimeInFrames: number): void {
         if (this.copyPos)
             vec3.copy(this.playerPos, globals.playerPosition);
 
@@ -687,7 +685,7 @@ export class d_a_sea extends fopAc_ac_c {
         this.animCounter += deltaTimeInFrames;
     }
 
-    public delete(globals: dGlobals): void {
+    public override delete(globals: dGlobals): void {
         const device = globals.modelCache.device;
         this.ddraw.destroy(device);
     }

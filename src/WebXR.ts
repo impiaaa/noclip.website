@@ -1,6 +1,5 @@
 
 import { GfxSwapChain } from "./gfx/platform/GfxPlatform";
-import { assertExists } from "./util";
 
 // TODO WebXR: Known issues
     // Should have the option to not render to the main view if in WebXR. This can be a simple check box
@@ -65,7 +64,7 @@ export class WebXRContext {
             this.xrSession.requestReferenceSpace('local'),
         ]);
 
-        const layer = this.swapChain.createWebXRLayer(this.xrSession);
+        const layer = await this.swapChain.createWebXRLayer(this.xrSession);
         this.xrSession.updateRenderState({ baseLayer: layer, depthNear: 5, depthFar: 1000000.0 });
 
         if (this.onstart !== null)

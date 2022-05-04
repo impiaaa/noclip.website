@@ -83,7 +83,7 @@ export const SFA_CLASSES: {[num: number]: typeof SFAClass} = {
         }
     },
     [251]: commonClass(0x18),
-    [254]: commonClass(0x1d, undefined, undefined, 0.03), // MagicPlant
+    [254]: commonClass(0x1d, undefined, undefined, 0.005), // MagicPlant
     [255]: class extends SFAClass { // MagicDustMi
         constructor(obj: ObjectInstance, data: DataView) {
             super(obj, data);
@@ -190,7 +190,7 @@ export const SFA_CLASSES: {[num: number]: typeof SFAClass} = {
     [306]: commonClass(0x1c, 0x1b, 0x1a), // WaterFallSp
     [307]: commonClass(),
     [308]: class extends commonClass() { // texscroll2
-        public mount(obj: ObjectInstance, world: World) {
+        public override mount(obj: ObjectInstance, world: World) {
             if (world.mapInstance === null)
                 throw Error(`No map available when spawning texscroll`);
 
@@ -400,7 +400,7 @@ export const SFA_CLASSES: {[num: number]: typeof SFAClass} = {
             obj.world.envfxMan.loadEnvfx(0x1b4);
         }
 
-        mount() {
+        override mount() {
             
         }
     },
@@ -413,13 +413,13 @@ export const SFA_CLASSES: {[num: number]: typeof SFAClass} = {
             obj.world.envfxMan.loadEnvfx(0x245);
         }
 
-        public mount(obj: ObjectInstance, world: World) {
+        public override mount(obj: ObjectInstance, world: World) {
             world.envfxMan.mistEnable = true;
             world.envfxMan.mistBottom = -1000.0;
             world.envfxMan.mistTop = world.envfxMan.mistBottom + 50.0;
         }
 
-        public unmount(obj: ObjectInstance, world: World) {
+        public override unmount(obj: ObjectInstance, world: World) {
             world.envfxMan.mistEnable = false;
         }
     },
@@ -704,7 +704,7 @@ export const SFA_CLASSES: {[num: number]: typeof SFAClass} = {
     [681]: LGTPointLgt, // LGTPointLgt
     [682]: commonClass(0x18, 0x19),
     [683]: LGTProjecte,
-    [685]: decorClass(0.001),
+    [685]: decorClass(0.005), // TODO: Speed depends on romlist objtype
     [686]: decorClass(),
     [687]: decorClass(0.0025),
     [688]: decorClass(),

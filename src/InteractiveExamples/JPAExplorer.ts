@@ -256,7 +256,7 @@ export class Explorer implements SceneGfx {
     private createUI(): void {
         const panel = new FloatingPanel();
         panel.setTitle(LAYER_ICON, `Particle Explorer`);
-        panel.setWidth(600);
+        panel.setWidth('600px');
         this.uiContainer.appendChild(panel.elem);
 
         const effectIndexList = makeDataList(this.jpac.effects.map((r, i) => '' + i));
@@ -319,7 +319,7 @@ export class Explorer implements SceneGfx {
         const playbackControls = document.createElement('div');
         playbackControls.style.display = 'grid';
         playbackControls.style.gridAutoFlow = 'column';
-        playbackControls.style.gridGap = '4px';
+        playbackControls.style.gap = '4px';
         panel.contents.appendChild(playbackControls);
 
         const prevButton = new SimpleButton();
@@ -452,7 +452,7 @@ export class Explorer implements SceneGfx {
         {
             efTemplate.filterKey = Pass.INDIRECT;
             const texPrjMtx = scratchMatrix;
-            texProjCameraSceneTex(texPrjMtx, viewerInput.camera, viewerInput.viewport, 1);
+            texProjCameraSceneTex(texPrjMtx, viewerInput.camera, 1);
             this.effectSystem.setDrawInfo(viewerInput.camera.viewMatrix, viewerInput.camera.projectionMatrix, texPrjMtx);
             this.effectSystem.draw(device, this.renderHelper.renderInstManager, Pass.INDIRECT);
         }

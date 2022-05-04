@@ -282,8 +282,7 @@ export function drawViewportSpacePoint(ctx: CanvasRenderingContext2D, x: number,
 }
 
 function shouldCull(p: ReadonlyVec4, clipSpaceNearZ = window.main.viewer.gfxDevice.queryVendorInfo().clipSpaceNearZ): boolean {
-    const nearZ = clipSpaceNearZ === GfxClipSpaceNearZ.Zero ? 0 : -1;
-    return p[0] < -1 || p[0] > 1 || p[1] < -1 || p[1] > 1 || p[2] < nearZ || p[2] > 1;
+    return p[0] < -1 || p[0] > 1 || p[1] < -1 || p[1] > 1 || p[2] < clipSpaceNearZ || p[2] > 1;
 }
 
 export function drawWorldSpacePoint(ctx: CanvasRenderingContext2D, clipFromWorldMatrix: ReadonlyMat4, v: ReadonlyVec3, color: Color = Magenta, size: number = 4): void {
@@ -429,24 +428,23 @@ function flashItem(item: any, fieldName: string, step: number = 0) {
         setTimeout(() => { flashItem(item, fieldName, step + 1) }, 200);
 }
 
-export function interactiveSliderSelect(items: any[], testItem: (itemIndex: number, v: boolean) => string | void, done: (itemIndex: number) => void): void {
-    const ui: UI = (window as any).main.ui;
-    const debugFloater = ui.debugFloaterHolder.makeFloatingPanel('SliderSelect');
+function interactiveSliderSelect(items: any[], testItem: (itemIndex: number, v: boolean) => string | void, done: (itemIndex: number) => void): void {
+    const panel = window.main.ui.debugFloaterHolder.makeFloatingPanel('SliderSelect');
     const slider = new Slider();
     // Revert to default style for clarity
     slider.elem.querySelector('input')!.classList.remove('Slider');
-    debugFloater.contents.append(slider.elem);
+    panel.contents.append(slider.elem);
 
     const textLabel = document.createElement('div');
     textLabel.style.padding = '1em';
-    debugFloater.contents.append(textLabel);
+    panel.contents.append(textLabel);
 
     const doneButton = document.createElement('div');
     doneButton.textContent = 'Select';
     doneButton.style.background = '#333';
     doneButton.style.cursor = 'pointer';
     doneButton.style.padding = '1em';
-    debugFloater.contents.append(doneButton);
+    panel.contents.append(doneButton);
 
     slider.setRange(-1, items.length - 1, 1);
 
@@ -467,11 +465,11 @@ export function interactiveSliderSelect(items: any[], testItem: (itemIndex: numb
 
     doneButton.onclick = () => {
         const index = slider.getValue();
-        debugFloater.close();
+        panel.close();
         done(index);
     };
 
-    debugFloater.onclose = () => {
+    panel.onclose = () => {
         done(-1);
     };
 }

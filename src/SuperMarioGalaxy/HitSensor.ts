@@ -1,10 +1,9 @@
 
-import { vec3, mat4, ReadonlyVec3, ReadonlyMat4 } from "gl-matrix";
+import { vec3, ReadonlyVec3, ReadonlyMat4 } from "gl-matrix";
 import { LiveActor, isDead, MessageType, MsgSharedGroup } from "./LiveActor";
 import { SceneObjHolder, SceneObj } from "./Main";
 import { connectToScene, getGroupFromArray, getJointMtxByName } from "./ActorUtil";
 import { NameObj, MovementType } from "./NameObj";
-import { ViewerRenderInput } from "../viewer";
 import { arrayRemove, assertExists } from "../util";
 import { transformVec3Mat4w1, transformVec3Mat4w0, Vec3Zero } from "../MathHelpers";
 
@@ -369,8 +368,8 @@ export class SensorHitChecker extends NameObj {
             sensor.group = this.characterGroup;
     }
 
-    public movement(sceneObjHolder: SceneObjHolder, viewerInput: ViewerRenderInput): void {
-        super.movement(sceneObjHolder, viewerInput);
+    public override movement(sceneObjHolder: SceneObjHolder): void {
+        super.movement(sceneObjHolder);
 
         this.clearGroup(this.playerGroup);
         this.clearGroup(this.rideGroup);
@@ -496,6 +495,10 @@ export function sendMsgEnemyAttackStrong(sceneObjHolder: SceneObjHolder, recvSen
 
 export function sendMsgEnemyAttackExplosion(sceneObjHolder: SceneObjHolder, recvSensor: HitSensor, sendSensor: HitSensor): boolean {
     return recvSensor.receiveMessage(sceneObjHolder, MessageType.EnemyAttackExplosion, sendSensor);
+}
+
+export function sendMsgEnemyAttackElectric(sceneObjHolder: SceneObjHolder, recvSensor: HitSensor, sendSensor: HitSensor): boolean {
+    return recvSensor.receiveMessage(sceneObjHolder, MessageType.EnemyAttackElectric, sendSensor);
 }
 
 export function sendMsgPush(sceneObjHolder: SceneObjHolder, recvSensor: HitSensor, sendSensor: HitSensor): boolean {

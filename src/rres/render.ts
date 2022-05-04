@@ -3,13 +3,13 @@ import * as BRRES from './brres';
 
 import * as GX_Material from '../gx/gx_material';
 import { mat4, ReadonlyMat4, vec3 } from "gl-matrix";
-import { MaterialParams, GXTextureHolder, ColorKind, translateTexFilterGfx, translateWrapModeGfx, PacketParams, loadedDataCoalescerComboGfx } from "../gx/gx_render";
+import { MaterialParams, GXTextureHolder, ColorKind, translateTexFilterGfx, translateWrapModeGfx, DrawParams, loadedDataCoalescerComboGfx } from "../gx/gx_render";
 import { GXShapeHelperGfx, GXMaterialHelperGfx } from "../gx/gx_render";
 import { computeViewMatrix, computeViewMatrixSkybox, Camera, texProjCameraSceneTex, computeViewSpaceDepthFromWorldSpaceAABB } from "../Camera";
 import AnimationController from "../AnimationController";
 import { TextureMapping } from "../TextureHolder";
 import { IntersectionState, AABB } from "../Geometry";
-import { GfxDevice, GfxSampler, GfxNormalizedViewportCoords } from "../gfx/platform/GfxPlatform";
+import { GfxDevice, GfxSampler } from "../gfx/platform/GfxPlatform";
 import { ViewerRenderInput } from "../viewer";
 import { GfxRenderInst, GfxRenderInstManager, GfxRendererLayer, makeSortKey, setSortKeyDepth, setSortKeyBias } from "../gfx/render/GfxRenderInstManager";
 import { GfxBufferCoalescerCombo } from '../gfx/helpers/BufferHelpers';
@@ -63,14 +63,14 @@ export class MDL0Model {
 }
 
 const bboxScratch = new AABB();
-const packetParams = new PacketParams();
+const drawParams = new DrawParams();
 class ShapeInstance {
     public sortKeyBias = 0;
 
     constructor(public shape: BRRES.MDL0_ShapeEntry, public shapeData: GXShapeHelperGfx, public sortVizNode: BRRES.MDL0_NodeEntry, public materialInstance: MaterialInstance) {
     }
 
-    public prepareToRender(device: GfxDevice, textureHolder: GXTextureHolder, renderInstManager: GfxRenderInstManager, depth: number, camera: Camera, viewport: Readonly<GfxNormalizedViewportCoords>, instanceStateData: InstanceStateData, isSkybox: boolean): void {
+    public prepareToRender(device: GfxDevice, textureHolder: GXTextureHolder, renderInstManager: GfxRenderInstManager, depth: number, camera: Camera, instanceStateData: InstanceStateData, isSkybox: boolean): void {
         const materialInstance = this.materialInstance;
 
         if (!materialInstance.visible)
@@ -87,9 +87,9 @@ class ShapeInstance {
         assert(usesSkinning === materialInstance.usesSkinning);
 
         if (!usesSkinning)
-            materialInstance.fillMaterialParams(template, textureHolder, instanceStateData, this.shape.mtxIdx, null, camera, viewport);
+            materialInstance.fillMaterialParams(template, textureHolder, instanceStateData, this.shape.mtxIdx, null, camera);
 
-        packetParams.clear();
+        drawParams.clear();
         for (let p = 0; p < this.shape.loadedVertexData.draws.length; p++) {
             const draw = this.shape.loadedVertexData.draws[p];
 
@@ -102,14 +102,14 @@ class ShapeInstance {
                     if (posNrmMatrixIdx === 0xFFFF)
                         continue;
 
-                    mat4.copy(packetParams.u_PosMtx[j], instanceStateData.drawViewMatrixArray[posNrmMatrixIdx]);
+                    mat4.copy(drawParams.u_PosMtx[j], instanceStateData.drawViewMatrixArray[posNrmMatrixIdx]);
 
                     if (instanceStateData.jointToWorldMatrixVisibility[j] !== IntersectionState.FULLY_OUTSIDE)
                         instVisible = true;
                 }
             } else {
                 instVisible = true;
-                mat4.copy(packetParams.u_PosMtx[0], instanceStateData.drawViewMatrixArray[this.shape.mtxIdx]);
+                mat4.copy(drawParams.u_PosMtx[0], instanceStateData.drawViewMatrixArray[this.shape.mtxIdx]);
             }
 
             if (!instVisible)
@@ -117,10 +117,10 @@ class ShapeInstance {
 
             const renderInst = renderInstManager.newRenderInst();
             this.shapeData.setOnRenderInst(renderInst, draw);
-            materialInstance.materialHelper.allocatePacketParamsDataOnInst(renderInst, packetParams);
+            materialInstance.materialHelper.allocateDrawParamsDataOnInst(renderInst, drawParams);
 
             if (usesSkinning)
-                materialInstance.fillMaterialParams(renderInst, textureHolder, instanceStateData, this.shape.mtxIdx, draw, camera, viewport);
+                materialInstance.fillMaterialParams(renderInst, textureHolder, instanceStateData, this.shape.mtxIdx, draw, camera);
 
             renderInstManager.submitRenderInst(renderInst);
         }
@@ -273,7 +273,7 @@ class MaterialInstance {
         }
     }
 
-    private calcTexMatrix(materialParams: MaterialParams, texIdx: number, camera: Camera, viewport: Readonly<GfxNormalizedViewportCoords>): void {
+    private calcTexMatrix(materialParams: MaterialParams, texIdx: number, camera: Camera): void {
         const material = this.materialData.material;
         const texSrt = material.texSrts[texIdx];
         const flipY = materialParams.m_TextureMapping[texIdx].flipY;
@@ -287,7 +287,7 @@ class MaterialInstance {
         }
 
         if (texSrt.mapMode === BRRES.MapMode.PROJECTION) {
-            texProjCameraSceneTex(dstPost, camera, viewport, flipYScale);
+            texProjCameraSceneTex(dstPost, camera, flipYScale);
 
             // Apply effect matrix.
             mat4.mul(dstPost, texSrt.effectMtx, dstPost);
@@ -334,7 +334,7 @@ class MaterialInstance {
         }
     }
 
-    private fillMaterialParamsData(materialParams: MaterialParams, textureHolder: GXTextureHolder, instanceStateData: InstanceStateData, posNrmMatrixIdx: number, draw: LoadedVertexDraw | null = null, camera: Camera, viewport: Readonly<GfxNormalizedViewportCoords>): void {
+    private fillMaterialParamsData(materialParams: MaterialParams, textureHolder: GXTextureHolder, instanceStateData: InstanceStateData, posNrmMatrixIdx: number, draw: LoadedVertexDraw | null = null, camera: Camera): void {
         const material = this.materialData.material;
 
         for (let i = 0; i < 8; i++) {
@@ -366,7 +366,7 @@ class MaterialInstance {
         }
 
         for (let i = 0; i < 8; i++)
-            this.calcTexMatrix(materialParams, i, camera, viewport);
+            this.calcTexMatrix(materialParams, i, camera);
         for (let i = 0; i < 3; i++)
             this.calcIndTexMatrix(materialParams.u_IndTexMtx[i], i);
 
@@ -415,8 +415,8 @@ class MaterialInstance {
         this.materialHelper.setOnRenderInst(device, cache, renderInst);
     }
 
-    public fillMaterialParams(renderInst: GfxRenderInst, textureHolder: GXTextureHolder, instanceStateData: InstanceStateData, posNrmMatrixIdx: number, draw: LoadedVertexDraw | null, camera: Camera, viewport: Readonly<GfxNormalizedViewportCoords>): void {
-        this.fillMaterialParamsData(materialParams, textureHolder, instanceStateData, posNrmMatrixIdx, draw, camera, viewport);
+    public fillMaterialParams(renderInst: GfxRenderInst, textureHolder: GXTextureHolder, instanceStateData: InstanceStateData, posNrmMatrixIdx: number, draw: LoadedVertexDraw | null, camera: Camera): void {
+        this.fillMaterialParamsData(materialParams, textureHolder, instanceStateData, posNrmMatrixIdx, draw, camera);
         this.materialHelper.allocateMaterialParamsDataOnInst(renderInst, materialParams);
         renderInst.setSamplerBindingsFromTextureMappings(materialParams.m_TextureMapping);
     }
@@ -686,7 +686,7 @@ export class MDL0ModelInstance {
             const shapeVisibility = (this.vis0NodeAnimator !== null ? this.vis0NodeAnimator.calcVisibility(shapeInstance.sortVizNode.id) : shapeInstance.sortVizNode.visible);
             if (!shapeVisibility)
                 continue;
-            shapeInstance.prepareToRender(device, this.textureHolder, renderInstManager, depth, camera, viewerInput.viewport, this.instanceStateData, this.isSkybox);
+            shapeInstance.prepareToRender(device, this.textureHolder, renderInstManager, depth, camera, this.instanceStateData, this.isSkybox);
         }
         renderInstManager.popTemplateRenderInst();
     }

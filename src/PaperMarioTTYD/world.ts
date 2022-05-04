@@ -903,7 +903,7 @@ export function parse(buffer: ArrayBufferSlice): TTYDWorld {
                 vat[GX.Attr.TEX2] = { compType: GX.CompType.F32, compCnt: GX.CompCnt.TEX_ST, compShift: view.getUint32(modelVcdTableOffs + 0x50) };
                 vcd[GX.Attr.TEX2] = { type: GX.AttrType.INDEX16 };
 
-                const loadedVertexLayout = compileLoadedVertexLayout([vat], vcd);
+                const loadedVertexLayout = compileLoadedVertexLayout(vcd);
 
                 let displayListTableIdx = meshOffs + 0x10;
                 const loadedDatas: LoadedVertexData[] = [];
@@ -995,7 +995,7 @@ export function parse(buffer: ArrayBufferSlice): TTYDWorld {
                         dstIdx += loadedVertexLayout.vertexBufferStrides[0];
                     }
 
-                    const indexBuffer = makeTriangleIndexBuffer(GfxTopology.TRISTRIP, vertexId, vertexCount);
+                    const indexBuffer = makeTriangleIndexBuffer(GfxTopology.TriStrips, vertexId, vertexCount);
                     vertexId += vertexCount;
                     const totalIndexCount = indexBuffer.length;
                     const indexData = indexBuffer.buffer;

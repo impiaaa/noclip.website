@@ -25,8 +25,9 @@ export interface VMT {
     [k: string]: VKFPairUnit;
 }
 
-class ValveKeyValueParser {
+export class ValveKeyValueParser {
     private pos = 0;
+
     constructor(private S: string) {
     }
 
@@ -83,7 +84,7 @@ class ValveKeyValueParser {
         while (this.hastok()) {
             this.skipcomment();
             const tok = this.chew();
-            if (tok == "}") {
+            if (tok === "}" || tok === "") {
                 return val;
             } else {
                 this.spit();
@@ -181,7 +182,7 @@ function convertPairsToObj(o: any, pairs: VKFPair[], recurse: boolean = false, s
     return o;
 }
 
-function pairs2obj(pairs: VKFPair[], recurse: boolean = false): any {
+export function pairs2obj(pairs: VKFPair[], recurse: boolean = false): any {
     const o: any = {};
     convertPairsToObj(o, pairs, recurse);
     return o;
@@ -283,30 +284,14 @@ export function vmtParseColor(dst: Color, S: string): void {
     dst.r = v[0] / 255.0;
     dst.g = v[1] / 255.0;
     dst.b = v[2] / 255.0;
-    dst.a = 1.0;
+    dst.a = (v[3] !== undefined) ? (v[3] / 255.0) : 1.0;
 }
 
 export function vmtParseNumber(S: string | undefined, fallback: number): number {
     if (S !== undefined) {
         const v = vmtParseVector(S);
-        if (v[0] !== undefined)
+        if (v[0] !== undefined && !Number.isNaN(v[0]))
             return v[0];
     }
     return fallback;
-}
-
-// This is in the same file because it also parses keyfiles, even though it's not material-related.
-export interface BSPEntity {
-    classname: string;
-    [k: string]: string;
-}
-
-export function parseEntitiesLump(str: string): BSPEntity[] {
-    const p = new ValveKeyValueParser(str);
-    const entities: BSPEntity[] = [];
-    while (p.hastok()) {
-        entities.push(pairs2obj(p.unit() as VKFPair[]) as BSPEntity);
-        p.skipwhite();
-    }
-    return entities;
 }

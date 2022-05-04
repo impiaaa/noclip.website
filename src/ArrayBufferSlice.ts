@@ -12,7 +12,6 @@
 import { assert } from "./util";
 import { getSystemEndianness, Endianness } from "./endian";
 
-// Limited amounts of structural typing.
 declare global {
     interface ArrayBuffer { [Symbol.species]?: "ArrayBuffer"; }
     interface Uint8Array { [Symbol.species]?: "Uint8Array"; }

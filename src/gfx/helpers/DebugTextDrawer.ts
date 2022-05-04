@@ -34,11 +34,8 @@ export class DebugTextDrawer {
         this.charWriter.setFont(fontData, 0, 0);
 
         const ddraw = this.ddraw;
-        ddraw.setVtxAttrFmt(GX.VtxFmt.VTXFMT0, GX.Attr.POS, GX.CompCnt.POS_XYZ);
         ddraw.setVtxDesc(GX.Attr.POS, true);
-        ddraw.setVtxAttrFmt(GX.VtxFmt.VTXFMT0, GX.Attr.CLR0, GX.CompCnt.CLR_RGBA);
         ddraw.setVtxDesc(GX.Attr.CLR0, true);
-        ddraw.setVtxAttrFmt(GX.VtxFmt.VTXFMT0, GX.Attr.TEX0, GX.CompCnt.TEX_ST);
         ddraw.setVtxDesc(GX.Attr.TEX0, true);
     }
 
@@ -50,7 +47,7 @@ export class DebugTextDrawer {
         fillSceneParamsData(d, offs, sceneParams);
     }
 
-    private setPacketParams(renderInst: GfxRenderInst): void {
+    private setDrawParams(renderInst: GfxRenderInst): void {
         let offs = renderInst.allocateUniformBuffer(GX_Program.ub_DrawParams, 16);
         const d = renderInst.mapUniformBufferF32(GX_Program.ub_DrawParams);
         mat4.identity(scratchMatrix);
@@ -75,6 +72,8 @@ export class DebugTextDrawer {
     }
 
     public drawString(renderInstManager: GfxRenderInstManager, vw: number, vh: number, str: string, x: number, y: number, strokeWidth = 1, strokeNum = 4): void {
+        vec3.zero(this.charWriter.origin);
+        vec3.copy(this.charWriter.cursor, this.charWriter.origin);
         this.charWriter.calcRect(scratchVec4, str);
 
         // Center align
@@ -86,7 +85,7 @@ export class DebugTextDrawer {
         template.setBindingLayouts(gxBindingLayouts);
         const clipSpaceNearZ = renderInstManager.gfxRenderCache.device.queryVendorInfo().clipSpaceNearZ;
         this.setSceneParams(template, vw, vh, clipSpaceNearZ);
-        this.setPacketParams(template);
+        this.setDrawParams(template);
 
         // Stroke
         colorCopy(this.charWriter.color1, this.strokeColor);
