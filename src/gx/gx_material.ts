@@ -455,7 +455,7 @@ export class GX_Program extends DeviceProgram {
 
         switch (diffFn) {
         case GX.DiffuseFunction.NONE: return `1.0`;
-        case GX.DiffuseFunction.SIGN: return `1.0`;//`${NdotL}`;
+        case GX.DiffuseFunction.SIGN: return `${NdotL}`;
         case GX.DiffuseFunction.CLAMP: return `max(${NdotL}, 0.0)`;
         }
     }
@@ -472,10 +472,9 @@ export class GX_Program extends DeviceProgram {
             return `
     t_Attenuation = max(0.0, ${cosAttn} / ${distAttn});`;
         } else if (chan.attenuationFunction === GX.AttenuationFunction.SPEC) {
-            const attn = `(dot(t_Normal, normalize(t_LightDelta)) >= 0.0) ? max(0.0, dot(t_Normal, ${lightName}.Direction.xyz)) : 0.0`;
+            const attn = `(dot(t_Normal, t_LightDeltaDir) >= 0.0) ? max(0.0, dot(t_Normal, ${lightName}.Direction.xyz)) : 0.0`;
             const cosAttn = `ApplyAttenuation(${lightName}.CosAtten.xyz, t_Attenuation)`;
-            const normalize = (chan.diffuseFunction === GX.DiffuseFunction.NONE) ? `normalize` : ``;
-            const distAttn = `max(0.0, ApplyAttenuation(${normalize}(${lightName}.DistAtten.xyz), t_Attenuation))`;
+            const distAttn = `max(0.0, ApplyAttenuation(${lightName}.DistAtten.xyz, t_Attenuation))`;
             return `
     t_Attenuation = ${attn};
     t_Attenuation = max(0.0, ${cosAttn} / ${distAttn});`;
@@ -1500,7 +1499,6 @@ void main() {
     o_OutColor1 = vec4(0.0);
 }
 `;
-        if (this.material.name === '_mat_coin_normal') console.log(this.vert);
     }
 }
 // #endregion
