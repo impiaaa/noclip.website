@@ -8,7 +8,7 @@ const OUT_PATH = `Screenshots/`;
 // Change to customize width/height.
 const WIDTH = 450, HEIGHT = 220;
 
-const DefaultSaveStates: { [k: string]: string } = require('../../DefaultSaveStates.json');
+const DefaultSaveStates: { [k: string]: string } = require('../DefaultSaveStates.json');
 
 // XXX(jstpierre): Don't ask.
 declare var main: any;
@@ -46,7 +46,7 @@ function waitForNetworkIdle(page: Puppeteer.Page, timeout: number, maxInflightRe
     page.on('requestfailed', onRequestFinished);
 
     let inflight = 0;
-    let fulfill: () => void;
+    let fulfill: (resolve: any) => void;
     let promise = new Promise(x => fulfill = x);
     let timeoutId = setTimeout(onTimeoutDone, timeout);
     return promise;
@@ -55,7 +55,7 @@ function waitForNetworkIdle(page: Puppeteer.Page, timeout: number, maxInflightRe
         page.removeListener('request', onRequestStarted);
         page.removeListener('requestfinished', onRequestFinished);
         page.removeListener('requestfailed', onRequestFinished);
-        fulfill();
+        fulfill(null);
     }
 
     function onRequestStarted() {
