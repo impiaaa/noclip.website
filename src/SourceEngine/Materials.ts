@@ -5,7 +5,7 @@ import { GfxRenderInst, makeSortKey, GfxRendererLayer, setSortKeyProgramKey, Gfx
 import { nArray, assert, assertExists, nullify } from "../util";
 import { GfxDevice, GfxProgram, GfxMegaStateDescriptor, GfxFrontFaceMode, GfxBlendMode, GfxBlendFactor, GfxTexture, GfxFormat, GfxSampler, GfxTexFilterMode, GfxMipFilterMode, GfxWrapMode, GfxCullMode, GfxCompareMode, GfxTextureDimension, GfxTextureUsage, GfxBuffer, GfxBufferUsage, GfxInputLayout, GfxInputState, GfxVertexAttributeDescriptor, GfxInputLayoutBufferDescriptor, GfxVertexBufferFrequency } from "../gfx/platform/GfxPlatform";
 import { GfxRenderCache } from "../gfx/render/GfxRenderCache";
-import { mat4, vec3, ReadonlyMat4, ReadonlyVec3, vec2, vec4, ReadonlyVec4 } from "gl-matrix";
+import { mat4, vec3, ReadonlyMat4, ReadonlyVec3, vec2, vec4 } from "gl-matrix";
 import { fillMatrix4x3, fillVec4, fillVec4v, fillMatrix4x2, fillColor, fillVec3v, fillMatrix4x4 } from "../gfx/helpers/UniformBufferHelpers";
 import { VTF } from "./VTF";
 import { SourceRenderContext, SourceFileSystem, SourceEngineView, BSPRenderer, SourceEngineViewType } from "./Main";
@@ -169,8 +169,6 @@ float CalcFresnelTerm2Ranges(float t_DotProduct, in vec3 t_Ranges) {
         return mix(t_Ranges.x, t_Ranges.y, invlerp(0.0, 0.5, t_Fresnel));
     else
         return mix(t_Ranges.y, t_Ranges.z, invlerp(0.5, 1.0, t_Fresnel));
-    // Workaround for https://github.com/gfx-rs/naga/issues/1053
-    return 0.0;
 }
 
 vec4 UnpackUnsignedNormalMap(in vec4 t_NormalMapSample) {
@@ -689,11 +687,6 @@ export abstract class BaseMaterial {
 
         if (renderContext.currentView.viewType === SourceEngineViewType.ShadowMap) {
             if (this.isTranslucent)
-                return false;
-        }
-
-        if (renderContext.currentView.viewType === SourceEngineViewType.WaterReflectView) {
-            if (this instanceof Material_Water)
                 return false;
         }
 
@@ -1315,9 +1308,6 @@ vec3 WorldLightCalcDirection(in WorldLight t_WorldLight, in vec3 t_PositionWorld
     } else {
         return normalize(t_WorldLight.Position.xyz - t_PositionWorld);
     }
-
-    // Workaround for https://github.com/gfx-rs/naga/issues/1053
-    return vec3(0.0);
 }
 
 float WorldLightCalcVisibility(in WorldLight t_WorldLight, in vec3 t_PositionWorld, in vec3 t_NormalWorld, bool t_HalfLambert) {
@@ -1332,9 +1322,6 @@ float WorldLightCalcVisibility(in WorldLight t_WorldLight, in vec3 t_PositionWor
     } else {
         return max(0.0, t_NoL);
     }
-
-    // Workaround for https://github.com/gfx-rs/naga/issues/1053
-    return 0.0;
 }
 
 vec3 WorldLightCalcDiffuse(in vec3 t_PositionWorld, in vec3 t_NormalWorld, bool t_HalfLambert, in float t_Attenuation, in WorldLight t_WorldLight) {
@@ -1400,22 +1387,23 @@ void mainVS() {
 
     v_DiffuseLighting.rgb = vec3(1.0);
 
+#ifdef USE_DYNAMIC_LIGHTING
+    vec4 t_LightAtten = WorldLightCalcAllAttenuation(t_PositionWorld.xyz);
+    v_DiffuseLighting.rgb = vec3(0.0);
+#endif
+
 #ifdef USE_STATIC_VERTEX_LIGHTING
     // Static vertex lighting should already include ambient lighting.
     // 2.0 here is overbright.
-    v_DiffuseLighting.rgb = GammaToLinear(a_StaticVertexLighting * 2.0);
-#endif
-
-// Mutually exclusive with above.
-#ifdef USE_AMBIENT_CUBE
-    v_DiffuseLighting.rgb = AmbientLight(t_NormalWorld);
-#endif
-
-#ifdef USE_DYNAMIC_LIGHTING
-    vec4 t_LightAtten = WorldLightCalcAllAttenuation(t_PositionWorld.xyz);
+    v_DiffuseLighting.rgb += GammaToLinear(a_StaticVertexLighting * 2.0);
 #endif
 
 #ifdef USE_DYNAMIC_VERTEX_LIGHTING
+
+#ifdef USE_AMBIENT_CUBE
+    v_DiffuseLighting.rgb += AmbientLight(t_NormalWorld);
+#endif
+
     bool t_HalfLambert = false;
 #ifdef USE_HALF_LAMBERT
     t_HalfLambert = true;
@@ -1846,13 +1834,16 @@ void mainPS() {
         t_HalfLambert = true;
     }
 
-    // TODO(jstpierre): Add in ambient cube? Or is that in the vertex color already...
     DiffuseLightInput t_DiffuseLightInput;
     t_DiffuseLightInput.PositionWorld = v_PositionWorld.xyz;
     t_DiffuseLightInput.NormalWorld = t_NormalWorld.xyz;
     t_DiffuseLightInput.LightAttenuation = v_LightAtten.xyzw;
     t_DiffuseLightInput.HalfLambert = t_HalfLambert;
-    t_DiffuseLighting.rgb *= WorldLightCalcAllDiffuse(t_DiffuseLightInput);
+    t_DiffuseLighting.rgb += WorldLightCalcAllDiffuse(t_DiffuseLightInput);
+
+#ifdef USE_AMBIENT_CUBE
+    t_DiffuseLighting.rgb += AmbientLight(t_NormalWorld.xyz);
+#endif
 #endif
 
     vec3 t_PositionToEye = u_CameraPosWorld.xyz - v_PositionWorld.xyz;
@@ -2023,7 +2014,9 @@ void mainPS() {
 
     t_FinalColor.rgb += t_FinalDiffuse;
 
+#ifndef DEBUG_DIFFUSEONLY
     t_FinalColor.rgb += t_SpecularLighting.rgb;
+#endif
 
     t_FinalColor.a = t_Albedo.a;
     if (!use_base_alpha_envmap_mask)
@@ -2076,7 +2069,7 @@ class Material_Generic extends BaseMaterial {
             wantsDynamicPixelLighting = false;
         } else if (this.shaderType === GenericShaderType.Skin) {
             this.wantsStaticVertexLighting = staticLightingMode === StaticLightingMode.StudioVertexLighting;
-            this.wantsAmbientCube = false;
+            this.wantsAmbientCube = staticLightingMode === StaticLightingMode.StudioAmbientCube;
             wantsDynamicVertexLighting = false;
             wantsDynamicPixelLighting = true;
         } else {
@@ -2900,7 +2893,7 @@ vec3 CalcPosWorldFromScreen(vec2 t_ProjTexCoord, float t_DepthSample) {
 float CalcFogAmountFromScreenPos(vec2 t_ProjTexCoord, float t_DepthSample) {
     vec3 t_DepthSamplePosWorld = CalcPosWorldFromScreen(t_ProjTexCoord, t_DepthSample);
 
-    // Now retrieve the height different (+Z is up in Source Engine BSP space)
+    // Now retrieve the height difference (+Z is up in Source Engine BSP space)
     float t_HeightDifference = v_PositionWorld.z - t_DepthSamplePosWorld.z;
 
     // Also account for the distance from the eye (emulate "traditional" scattering fog)
@@ -3286,6 +3279,16 @@ class Material_Water extends BaseMaterial {
         renderInst.setMegaStateFlags(this.megaStateFlags);
         renderInst.sortKey = this.sortKeyBase;
     }
+
+    public override isMaterialVisible(renderContext: SourceRenderContext): boolean {
+        if (!super.isMaterialVisible(renderContext))
+            return false;
+
+        if (renderContext.currentView.viewType === SourceEngineViewType.WaterReflectView)
+            return false;
+
+        return false;
+    }
 }
 //#endregion
 
@@ -3436,6 +3439,11 @@ void mainPS() {
     for (int y = -g_BlurAmount; y <= g_BlurAmount; y++) {
         for (int x = -g_BlurAmount; x <= g_BlurAmount; x++) {
             vec2 t_TexCoord = t_RefractTexCoord + vec2(t_BlurSampleOffset.x * float(x), t_BlurSampleOffset.y * float(y));
+
+#ifdef GFX_VIEWPORT_ORIGIN_TL
+            t_TexCoord.y = 1.0 - t_TexCoord.y;
+#endif
+
             t_BlurAccum += g_BlurWeight * texture(SAMPLER_2D(u_TextureBase), t_TexCoord);
         }
     }

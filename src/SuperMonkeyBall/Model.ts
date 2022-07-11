@@ -5,13 +5,14 @@ import { GfxRenderInstList, GfxRenderInstManager } from "../gfx/render/GfxRender
 import { GXMaterialHacks, LightingFudgeParams } from "../gx/gx_material";
 import { ViewerRenderInput } from "../viewer";
 import * as Gma from "./Gma";
-import { TextureHolder } from "./ModelCache";
+import { TextureCache } from "./ModelCache";
 import { TevLayerInst } from "./TevLayer";
 import { ShapeInst } from "./Shape";
 import { RenderContext } from "./Render";
 import { Color, colorNewFromRGBA } from "../Color";
-import { Lighting } from "./World";
+import { ModelInterface } from "./World";
 import { transformVec3Mat4w1 } from "../MathHelpers";
+import { Lighting } from "./Lighting";
 
 export const enum RenderSort {
     Translucent, // Depth sort "translucent" shapes only
@@ -25,6 +26,7 @@ export class RenderParams {
     public sort: RenderSort;
     public texMtx = mat4.create();
     public lighting: Lighting | null;
+    public depthOffset: number;
 
     constructor() {
         this.reset();
@@ -36,15 +38,16 @@ export class RenderParams {
         this.sort = RenderSort.Translucent;
         mat4.identity(this.texMtx);
         this.lighting = null;
+        this.depthOffset = 0;
     }
 }
 
 const scratchVec3a = vec3.create();
-export class ModelInst {
+export class ModelInst implements ModelInterface {
     private shapes: ShapeInst[];
     private tevLayers: TevLayerInst[]; // Each shape's material uses up to three of these
 
-    constructor(device: GfxDevice, renderCache: GfxRenderCache, public modelData: Gma.Model, texHolder: TextureHolder) {
+    constructor(device: GfxDevice, renderCache: GfxRenderCache, public modelData: Gma.Model, texHolder: TextureCache) {
         this.tevLayers = modelData.tevLayers.map(
             (tevLayerData) => new TevLayerInst(device, renderCache, tevLayerData, texHolder)
         );
