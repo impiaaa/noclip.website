@@ -1043,7 +1043,7 @@ function readMAT3Chunk(buffer: ArrayBufferSlice): MAT3 {
             const litMask = view.getUint8(colorChanOffs + 0x02);
             const diffuseFunction: GX.DiffuseFunction = view.getUint8(colorChanOffs + 0x03);
             const attnSel = view.getUint8(colorChanOffs + 0x04);
-            const attnLookup = [GX.AttenuationFunction.SPEC, GX.AttenuationFunction.SPOT, GX.AttenuationFunction.NONE, GX.AttenuationFunction.NONE]; // last two are actually DIR
+            const attnLookup = [GX.AttenuationFunction.SPEC, GX.AttenuationFunction.SPOT, GX.AttenuationFunction.NONE, GX.AttenuationFunction.NONE];
             const attenuationFunction = attnLookup[attnSel];
             const ambColorSource: GX.ColorSrc = view.getUint8(colorChanOffs + 0x05);
 
