@@ -1,14 +1,15 @@
 
 // Misc actors that aren't big enough to have their own file.
 
-import { mat4, quat, ReadonlyMat3, ReadonlyMat4, ReadonlyVec3, vec2, vec3 } from 'gl-matrix';
+import { mat4, quat, ReadonlyMat4, ReadonlyVec3, vec2, vec3, vec4 } from 'gl-matrix';
 import { Camera } from '../../Camera';
-import { Blue, Color, colorCopy, colorFromRGBA8, colorNewCopy, colorNewFromRGBA8, Green, OpaqueBlack, Red, White, Yellow } from '../../Color';
-import { buildEnvMtx } from '../../Common/JSYSTEM/J3D/J3DGraphBase';
+import { Blue, Color, colorCopy, colorFromRGBA8, colorNewCopy, colorNewFromRGBA8, Green, Magenta, OpaqueBlack, Red, White, Yellow } from '../../Color';
+import { buildEnvMtx, J3DModelInstance } from '../../Common/JSYSTEM/J3D/J3DGraphBase';
 import * as RARC from '../../Common/JSYSTEM/JKRArchive';
 import { BTIData } from '../../Common/JSYSTEM/JUTTexture';
 import { dfRange, dfShow } from '../../DebugFloaters';
 import { drawWorldSpaceBasis, drawWorldSpaceLine, drawWorldSpacePoint, getDebugOverlayCanvas2D } from '../../DebugJunk';
+import { AABB } from '../../Geometry';
 import { makeStaticDataBuffer } from '../../gfx/helpers/BufferHelpers';
 import { getTriangleIndexCountForTopologyIndexCount, GfxTopology } from '../../gfx/helpers/TopologyHelpers';
 import { GfxBuffer, GfxBufferUsage, GfxDevice, GfxFormat, GfxInputLayout, GfxInputLayoutBufferDescriptor, GfxInputState, GfxVertexAttributeDescriptor, GfxVertexBufferFrequency } from '../../gfx/platform/GfxPlatform';
@@ -29,8 +30,9 @@ import { isDemoLastStep, registerDemoActionNerve, tryRegisterDemoCast } from '..
 import { deleteEffect, deleteEffectAll, emitEffect, forceDeleteEffect, forceDeleteEffectAll, isEffectValid, setEffectEnvColor, setEffectHostMtx, setEffectHostSRT, setEffectName } from '../EffectSystem';
 import { addBaseMatrixFollowTarget } from '../Follow';
 import { initFurPlanet } from '../Fur';
-import { addBodyMessageSensorMapObj, addHitSensor, addHitSensorMapObj, addHitSensorEnemy, HitSensor, HitSensorType, addHitSensorPosMapObj, invalidateHitSensors, validateHitSensors, isSensorPressObj, setSensorRadius, sendArbitraryMsg, addHitSensorCallbackMapObj, addHitSensorCallbackMapObjSimple, addHitSensorEye } from '../HitSensor';
+import { addBodyMessageSensorMapObj, addHitSensor, addHitSensorMapObj, addHitSensorEnemy, HitSensor, HitSensorType, addHitSensorPosMapObj, invalidateHitSensors, validateHitSensors, isSensorPressObj, setSensorRadius, sendArbitraryMsg, addHitSensorCallbackMapObj, addHitSensorCallbackMapObjSimple, addHitSensorEye, addHitSensorAtJoint, invalidateHitSensor } from '../HitSensor';
 import { createCsvParser, getJMapInfoArg0, getJMapInfoArg1, getJMapInfoArg2, getJMapInfoArg3, getJMapInfoArg4, getJMapInfoArg5, getJMapInfoArg6, getJMapInfoArg7, getJMapInfoBool, getJMapInfoGroupId, JMapInfoIter } from '../JMapInfo';
+import { LayoutActor } from '../Layout';
 import { initLightCtrl } from '../LightData';
 import { dynamicSpawnZoneAndLayer, isDead, isMsgTypeEnemyAttack, LiveActor, LiveActorGroup, makeMtxTRFromActor, MessageType, MsgSharedGroup, ZoneAndLayer } from '../LiveActor';
 import { getObjectName, SceneObj, SceneObjHolder, SpecialTextureType } from '../Main';
@@ -38,8 +40,8 @@ import { getMapPartsArgMoveConditionType, MapPartsRailMover, MoveConditionType }
 import { HazeCube, isInWater, WaterAreaHolder, WaterInfo } from '../MiscMap';
 import { CalcAnimType, DrawBufferType, DrawType, GameBits, MovementType, NameObj, NameObjAdaptor } from '../NameObj';
 import { isConnectedWithRail, RailRider } from '../RailRider';
-import { addShadowVolumeCylinder, addShadowVolumeLine, getShadowProjectionLength, getShadowProjectionNormal, getShadowProjectionPos, initShadowController, initShadowSurfaceCircle, initShadowVolumeCylinder, initShadowVolumeFlatModel, initShadowVolumeSphere, isShadowProjected, onCalcShadow, onCalcShadowDropPrivateGravity, onCalcShadowDropPrivateGravityOneTime, onCalcShadowOneTime, onShadowVolumeCutDropLength, setShadowDropLength, setShadowDropPosition, setShadowDropPositionPtr, setShadowVolumeBoxSize, setShadowVolumeEndDropOffset } from '../Shadow';
-import { calcNerveRate, isFirstStep, isGreaterEqualStep, isGreaterStep, isLessStep } from '../Spine';
+import { addShadowVolumeCylinder, addShadowVolumeLine, getShadowProjectionLength, getShadowProjectionNormal, getShadowProjectionPos, initShadowController, initShadowFromCSV, initShadowSurfaceCircle, initShadowVolumeCylinder, initShadowVolumeFlatModel, initShadowVolumeSphere, isShadowProjected, onCalcShadow, onCalcShadowDropPrivateGravity, onCalcShadowDropPrivateGravityOneTime, onCalcShadowOneTime, onShadowVolumeCutDropLength, setShadowDropLength, setShadowDropPosition, setShadowDropPositionPtr, setShadowVolumeBoxSize, setShadowVolumeEndDropOffset } from '../Shadow';
+import { calcNerveRate, isCrossedStep, isFirstStep, isGreaterEqualStep, isGreaterStep, isLessStep } from '../Spine';
 import { isExistStageSwitchSleep } from '../Switch';
 import { WorldmapPointInfo } from './LegacyActor';
 import { addBrightObj, BrightObjBase, BrightObjCheckArg } from './LensFlare';
@@ -84,6 +86,10 @@ function setClippingFar(f: number): number {
     if (f === 600)
         return 1;
     throw "whoops";
+}
+
+function isGalaxyDarkCometAppearInCurrentStage(sceneObjHolder: SceneObjHolder): boolean {
+    return sceneObjHolder.scenarioData.scenarioDataIter.getValueString('Comet') === 'Dark';
 }
 
 export function isEqualStageName(sceneObjHolder: SceneObjHolder, stageName: string): boolean {
@@ -299,6 +305,8 @@ const enum BlackHoleNrv { Wait }
 export class BlackHole extends LiveActor<BlackHoleNrv> {
     private blackHoleModel: ModelObj;
     private effectHostMtx = mat4.create();
+    private cubeBoxMtxInv: mat4 | null = null;
+    private cubeBox: AABB | null = null;
 
     constructor(zoneAndLayer: ZoneAndLayer, sceneObjHolder: SceneObjHolder, infoIter: JMapInfoIter) {
         super(zoneAndLayer, sceneObjHolder, getObjectName(infoIter));
@@ -308,6 +316,15 @@ export class BlackHole extends LiveActor<BlackHoleNrv> {
         let sensorRadius: number;
         if (this.name === 'BlackHoleCube') {
             // TODO(jstpierre): CubeBox
+            this.cubeBoxMtxInv = mat4.create();
+            computeModelMatrixR(this.cubeBoxMtxInv, this.rotation[0], this.rotation[1], this.rotation[2]);
+            setMatrixTranslation(this.cubeBoxMtxInv, this.translation);
+            mat4.invert(this.cubeBoxMtxInv, this.cubeBoxMtxInv);
+            this.cubeBox = new AABB(
+                -this.scale[0] * 500.0, -this.scale[1] * 500.0, -this.scale[2] * 500.0,
+                this.scale[0] * 500.0, this.scale[1] * 500.0, this.scale[2] * 500.0,
+            );
+
             sensorRadius = vec3.length(this.scale) * 500.0;
         } else {
             sensorRadius = this.scale[0] * 500.0;
@@ -339,13 +356,19 @@ export class BlackHole extends LiveActor<BlackHoleNrv> {
         this.initNerve(BlackHoleNrv.Wait);
     }
 
+    private isInCubeBox(pos: ReadonlyVec3): boolean {
+        if (this.cubeBox === null)
+            return true;
+
+        transformVec3Mat4w1(scratchVec3, this.cubeBoxMtxInv!, pos);
+        return this.cubeBox.containsPoint(scratchVec3);
+    }
+
     public override attackSensor(sceneObjHolder: SceneObjHolder, thisSensor: HitSensor, otherSensor: HitSensor): void {
         super.attackSensor(sceneObjHolder, thisSensor, otherSensor);
 
-        if (this.isNerve(BlackHoleNrv.Wait)) {
-            // TODO(jstpierre): Extra cube box check
+        if (this.isNerve(BlackHoleNrv.Wait) && this.isInCubeBox(otherSensor.center))
             sendArbitraryMsg(sceneObjHolder, MessageType.InhaleBlackHole, otherSensor, thisSensor);
-        }
     }
 
     protected override updateSpine(sceneObjHolder: SceneObjHolder, currentNerve: BlackHoleNrv, deltaTimeFrames: number): void {
@@ -941,6 +964,15 @@ class Coin extends LiveActor<CoinNrv> {
     public setHostInfo(hostInfo: CoinHostInfo): void {
         this.hostInfo = hostInfo;
     }
+
+    public override scenarioChanged(sceneObjHolder: SceneObjHolder): void {
+        if (!this.isPurpleCoin) {
+            const visible = sceneObjHolder.spawner.checkAliveScenario(this.zoneAndLayer) && isGalaxyDarkCometAppearInCurrentStage(sceneObjHolder);
+            this.setVisibleScenario(sceneObjHolder, visible);
+        } else {
+            super.scenarioChanged(sceneObjHolder);
+        }
+    }
 }
 
 function addToCoinHolder(sceneObjHolder: SceneObjHolder, host: NameObj, coin: Coin): void {
@@ -971,8 +1003,6 @@ export function createDirectSetPurpleCoin(zoneAndLayer: ZoneAndLayer, sceneObjHo
 
 export function createPurpleCoin(zoneAndLayer: ZoneAndLayer, sceneObjHolder: SceneObjHolder, infoIter: JMapInfoIter | null): Coin {
     const coin = new Coin(zoneAndLayer, sceneObjHolder, infoIter, true);
-    coin.initialize(sceneObjHolder, infoIter);
-    // TODO(jstpierre): PurpleCoinHolder
     return coin;
 }
 
@@ -1751,6 +1781,9 @@ export class ShootingStar extends LiveActor<ShootingStarNrv> {
         calcUpVec(this.axisY, this);
 
         startBpk(this, 'ShootingStar');
+
+        hideModel(this);
+        this.initWaitPhase = getRandomInt(0, this.delay);
     }
 
     private appearPreShooting(sceneObjHolder: SceneObjHolder): void {
@@ -1990,6 +2023,154 @@ export class YellowChip extends ChipBase {
     }
 }
 
+// https://graphics.stanford.edu/~seander/bithacks.html#CountBitsSetParallel
+function popCount(v: number) {
+    v = v - ((v >>> 1) & 0x55555555);
+    v = (v & 0x33333333) + ((v >>> 2) & 0x33333333);
+    return ((v + (v >> 4) & 0xF0F0F0F) * 0x1010101) >>> 24;
+}
+
+function getLightNumMax(model: J3DModelInstance): number {
+    let num = 0;
+    for (let i = 0; i < model.materialInstances.length; i++) {
+        const gxMaterial = model.materialInstances[i].materialData.material.gxMaterial;
+        for (let j = 0; j < gxMaterial.lightChannels.length; j++) {
+            num += popCount(gxMaterial.lightChannels[j].colorChannel.litMask);
+            num += popCount(gxMaterial.lightChannels[j].alphaChannel.litMask);
+        }
+    }
+    return num;
+}
+
+interface DummyDisplayModelInfo {
+    name: string;
+    offset: ReadonlyVec3;
+    drawBufferType: DrawBufferType;
+    bck: string | null;
+    colorChange: boolean;
+}
+
+export class DummyDisplayModel extends PartsModel {
+    private isCrystalItem: boolean;
+
+    public static InfoTable: DummyDisplayModelInfo[] = [
+        { name: "Coin", offset: vec3.fromValues(0.0, 70.0, 0.0), drawBufferType: DrawBufferType.NoSilhouettedMapObjStrongLight, bck: null, colorChange: false },
+        { name: "Kinopio", offset: vec3.fromValues(0.0, 50.0, 0.0), drawBufferType: DrawBufferType.Npc, bck: "Freeze", colorChange: true },
+        { name: "SpinDriver", offset: Vec3Zero, drawBufferType: DrawBufferType.NoShadowedMapObj, bck: null, colorChange: false },
+        { name: "SuperSpinDriver", offset: Vec3Zero, drawBufferType: DrawBufferType.NoShadowedMapObj, bck: "Freeze", colorChange: false },
+        { name: "StarPieceDummy", offset: vec3.fromValues(-30.0, 100.0, -30.0), drawBufferType: DrawBufferType.NoSilhouettedMapObj, bck: "Freeze", colorChange: false },
+        { name: "Tico", offset: vec3.fromValues(0.0, 50.0, 0.0), drawBufferType: DrawBufferType.Npc, bck: null, colorChange: true },
+        { name: "KeySwitch", offset: Vec3Zero, drawBufferType: DrawBufferType.MapObjStrongLight, bck: "InRotation", colorChange: false },
+        { name: "PowerStar", offset: Vec3Zero, drawBufferType: DrawBufferType.NoSilhouettedMapObj, bck: null, colorChange: false },
+        { name: "KinokoOneUp", offset: vec3.fromValues(0.0, 40.0, 0.0), drawBufferType: DrawBufferType.NoSilhouettedMapObj, bck: null, colorChange: false },
+        { name: "Kuribo", offset: vec3.fromValues(0.0, 80.0, 0.0), drawBufferType: DrawBufferType.Enemy, bck: null, colorChange: false },
+        { name: "BlueChip", offset: Vec3Zero, drawBufferType: DrawBufferType.NoShadowedMapObj, bck: null, colorChange: false },
+        { name: "YellowChip", offset: Vec3Zero, drawBufferType: DrawBufferType.NoShadowedMapObj, bck: null, colorChange: false },
+        { name: "StrayTico", offset: vec3.fromValues(0.0, 50.0, 0.0), drawBufferType: DrawBufferType.Npc, bck: null, colorChange: false },
+        { name: "GrandStar", offset: Vec3Zero, drawBufferType: DrawBufferType.NoSilhouettedMapObj, bck: null, colorChange: false },
+        { name: "KinokoLifeUp", offset: vec3.fromValues(0.0, 40.0, 0.0), drawBufferType: DrawBufferType.NoSilhouettedMapObj, bck: null, colorChange: false },
+    ];
+
+    constructor(sceneObjHolder: SceneObjHolder, parentActor: LiveActor, public info: DummyDisplayModelInfo, drawBufferType: DrawBufferType, colorChangeFrame: number) {
+        super(sceneObjHolder, info.name, info.name, parentActor, drawBufferType);
+        this.isCrystalItem = (drawBufferType === DrawBufferType.CrystalItem);
+
+        if (this.info.name === "Coin" && !this.isCrystalItem)
+            sceneObjHolder.create(SceneObj.CoinRotater);
+
+        if (this.info.bck !== null)
+            startBck(this, this.info.bck);
+
+        if (this.info.colorChange) {
+            startBrk(this, "ColorChange");
+            setBrkFrameAndStop(this, colorChangeFrame);
+        }
+
+        if (this.info.name !== "GrandStar" && getLightNumMax(this.modelInstance!) > 0)
+            initLightCtrl(sceneObjHolder, this);
+
+        if (this.info.name === "Kinopio") {
+            // LodCtrl
+        } else if (this.info.name === "StarPieceDummy") {
+            if (!this.isCrystalItem)
+                initShadowFromCSV(sceneObjHolder, this);
+        } else if (this.info.name === "PowerStar") {
+            // if (!this.isCrystalItem)
+            //     PowerStar.initShadowPowerStar(...);
+        } else if (this.info.name === "GrandStar") {
+            // PowerStar.setupColor();
+            // emitEffect(sceneObjHolder, this, "Light");
+        }
+
+        // registerDemoSimpleCastAll
+    }
+
+    protected override calcAndSetBaseMtx(sceneObjHolder: SceneObjHolder): void {
+        super.calcAndSetBaseMtx(sceneObjHolder);
+        const baseMtx = this.getBaseMtx()!;
+        vec3.negate(scratchVec3, this.info.offset);
+        transformVec3Mat4w1(this.translation, baseMtx, scratchVec3);
+        setMatrixTranslation(baseMtx, this.translation);
+
+        if (this.info.name === 'Coin') {
+            if (!this.isCrystalItem)
+                mat4.mul(baseMtx, sceneObjHolder.coinRotater!.coinRotateMtx, baseMtx);
+        } else if (this.info.name === 'GrandStar') {
+            // TODO(jstpierre): Some matrix math here
+        }
+    }
+
+    public override scenarioChanged(sceneObjHolder: SceneObjHolder): void {
+        if (this.info.name === 'Coin') {
+            const visible = sceneObjHolder.spawner.checkAliveScenario(this.zoneAndLayer) && isGalaxyDarkCometAppearInCurrentStage(sceneObjHolder);
+            this.setVisibleScenario(sceneObjHolder, visible);
+        } else {
+            super.scenarioChanged(sceneObjHolder);
+        }
+    }
+
+    public static requestArchivesForInfo(sceneObjHolder: SceneObjHolder, info: DummyDisplayModelInfo): void {
+        sceneObjHolder.modelCache.requestObjectData(info.name);
+    }
+}
+
+function getDummyDisplayModelId(infoIter: JMapInfoIter | null, fallbackModelID: number | null): number | null {
+    if (infoIter === null)
+        return fallbackModelID;
+
+    return fallback(getJMapInfoArg7(infoIter), fallbackModelID);
+}
+
+function getDummyDisplayModelInfo(infoIter: JMapInfoIter | null, fallbackModelID: number | null): DummyDisplayModelInfo | null {
+    const modelID = getDummyDisplayModelId(infoIter, fallbackModelID);
+    if (modelID === null)
+        return null;
+
+    return DummyDisplayModel.InfoTable[modelID]!;
+}
+
+function tryCreateDummyModel(sceneObjHolder: SceneObjHolder, parentActor: LiveActor, infoIter: JMapInfoIter | null, fallbackModelID: number | null, drawBufferType: DrawBufferType): DummyDisplayModel | null {
+    const info = getDummyDisplayModelInfo(infoIter, fallbackModelID);
+    if (info === null)
+        return null;
+
+    let colorChangeFrame: number = 0;
+    if (infoIter !== null)
+        colorChangeFrame = fallback(getJMapInfoArg7(infoIter), colorChangeFrame);
+
+    if (drawBufferType < 0)
+        drawBufferType = info.drawBufferType;
+        
+    return new DummyDisplayModel(sceneObjHolder, parentActor, info, drawBufferType, colorChangeFrame);
+}
+
+function createDummyModelCrystalItem(sceneObjHolder: SceneObjHolder, parentActor: LiveActor, fallbackModelID: number | null, infoIter: JMapInfoIter, offset: ReadonlyVec3): DummyDisplayModel | null {
+    const dummyModel = tryCreateDummyModel(sceneObjHolder, parentActor, infoIter, fallbackModelID, DrawBufferType.CrystalItem);
+    if (dummyModel !== null)
+        dummyModel.initFixedPositionRelative(offset);
+    return dummyModel;
+}
+
 const enum CrystalCageSize { S, M, L }
 const enum CrystalCageNrv { Wait, Break, BreakAfter }
 export class CrystalCage extends LiveActor<CrystalCageNrv> {
@@ -1998,7 +2179,7 @@ export class CrystalCage extends LiveActor<CrystalCageNrv> {
     private breakModel: ModelObj;
     private sensorPos = vec3.create();
     private binderOffsetVec = vec3.create();
-    private dummyDisplayModel: PartsModel | null = null;
+    private dummyDisplayModel: DummyDisplayModel | null = null;
     private hasBinder = false;
     private breakImmediately = false;
     private powerStarId: number;
@@ -2053,7 +2234,26 @@ export class CrystalCage extends LiveActor<CrystalCageNrv> {
         // setClippingTypeSphere
         // initSound
 
-        // dummyDisplayModel
+        if (this.size === CrystalCageSize.L) {
+            vec3.set(scratchVec3, 0.0, this.scale[0] * 250.0, 0.0);
+            const fallbackModelID = 7; // PowerStar
+            this.dummyDisplayModel = createDummyModelCrystalItem(sceneObjHolder, this, fallbackModelID, infoIter, scratchVec3);
+        } else {
+            if (this.size === CrystalCageSize.M) {
+                vec3.set(scratchVec3, 0.0, 200.0, 0.0);
+            } else {
+                vec3.set(scratchVec3, -30.0, 100.0, -30.0);
+            }
+            this.dummyDisplayModel = createDummyModelCrystalItem(sceneObjHolder, this, null, infoIter, scratchVec3);
+        }
+
+        if (this.dummyDisplayModel !== null) {
+            if (this.dummyDisplayModel.info.name === "StarPieceDummy") {
+                startBva(this.dummyDisplayModel, "Freeze");
+            } else if (this.dummyDisplayModel.info.name === "Coin") {
+                declareCoin(sceneObjHolder, this, 1);
+            }
+        }
 
         startBva(this, this.name);
         setBvaFrameAndStop(this, 0.0);
@@ -2193,10 +2393,17 @@ export class CrystalCage extends LiveActor<CrystalCageNrv> {
     public static override requestArchives(sceneObjHolder: SceneObjHolder, infoIter: JMapInfoIter): void {
         super.requestArchives(sceneObjHolder, infoIter);
         const size = CrystalCage.getSize(infoIter);
-        if (size === CrystalCageSize.L)
+        if (size === CrystalCageSize.L) {
+            const dummyDisplayModelInfo = getDummyDisplayModelInfo(infoIter, 7); // GrandStar
+            if (dummyDisplayModelInfo !== null)
+                DummyDisplayModel.requestArchivesForInfo(sceneObjHolder, dummyDisplayModelInfo);
             sceneObjHolder.modelCache.requestObjectData('CrystalCageLBreak');
-        else
+        } else {
+            const dummyDisplayModelInfo = getDummyDisplayModelInfo(infoIter, null);
+            if (dummyDisplayModelInfo !== null)
+                DummyDisplayModel.requestArchivesForInfo(sceneObjHolder, dummyDisplayModelInfo);
             sceneObjHolder.modelCache.requestObjectData('CrystalCageSBreak');
+        }
     }
 }
 
@@ -2213,8 +2420,6 @@ export class LavaSteam extends LiveActor<LavaSteamNrv> {
         setEffectHostSRT(this, 'Sign', this.translation, this.rotation, this.effectScale);
 
         this.initNerve(LavaSteamNrv.Wait);
-
-        this.initWaitPhase = getRandomInt(0, 50);
 
         connectToSceneNoSilhouettedMapObj(sceneObjHolder, this);
     }
@@ -4365,7 +4570,7 @@ export class ChooChooTrain extends LiveActor {
 
         getRailDirection(scratchVec3a, this);
         const angle = Math.atan2(scratchVec3a[2], scratchVec3a[0]);
-        this.rotation[1] = -angle + MathConstants.TAU / 4;
+        vec3.set(this.rotation, 0, -angle + MathConstants.TAU / 4, 0);
 
         const coord = getRailCoord(this);
         reverseRailDirection(this);
@@ -4376,7 +4581,7 @@ export class ChooChooTrain extends LiveActor {
             moveTransToOtherActorRailPos(body, this);
             getRailDirection(scratchVec3a, this);
             const angle = Math.atan2(scratchVec3a[2], scratchVec3a[0]);
-            body.rotation[1] = -angle - MathConstants.TAU / 4;
+            vec3.set(body.rotation, 0, -angle - MathConstants.TAU / 4, 0);
         }
 
         reverseRailDirection(this);
@@ -4392,7 +4597,7 @@ export class ChooChooTrain extends LiveActor {
 
 class SwingRopePoint {
     public position = vec3.create();
-    public accel = vec3.create();
+    public vel = vec3.create();
     public axisX = vec3.fromValues(1, 0, 0);
     public axisY = vec3.fromValues(0, 1, 0);
     public axisZ = vec3.fromValues(0, 0, 1);
@@ -4402,14 +4607,14 @@ class SwingRopePoint {
     }
 
     public addAccel(v: vec3): void {
-        vec3.add(this.accel, this.accel, v);
+        vec3.add(this.vel, this.vel, v);
     }
 
-    public restrict(pos: vec3, limit: number, accel: vec3 | null): void {
-        vec3.add(scratchVec3a, this.position, this.accel);
+    public restrict(pos: vec3, limit: number, vel: vec3 | null): void {
+        vec3.add(scratchVec3a, this.position, this.vel);
         vec3.sub(scratchVec3a, scratchVec3a, pos);
-        if (accel !== null)
-            vec3.sub(scratchVec3a, scratchVec3a, accel);
+        if (vel !== null)
+            vec3.sub(scratchVec3a, scratchVec3a, vel);
 
         const mag = vec3.squaredLength(scratchVec3a);
 
@@ -4419,13 +4624,13 @@ class SwingRopePoint {
         if (mag >= limit*limit) {
             vec3.scale(scratchVec3b, scratchVec3b, limit);
             vec3.sub(scratchVec3a, scratchVec3a, scratchVec3b);
-            vec3.sub(this.accel, this.accel, scratchVec3a);
+            vec3.sub(this.vel, this.vel, scratchVec3a);
         }
     }
 
     public updatePos(drag: number): void {
-        vec3.add(this.position, this.position, this.accel);
-        vec3.scale(this.accel, this.accel, drag);
+        vec3.add(this.position, this.position, this.vel);
+        vec3.scale(this.vel, this.vel, drag);
     }
 
     public updateAxis(axisZ: vec3): void {
@@ -6093,7 +6298,7 @@ export class Flag extends LiveActor {
         for (let i = 0; i < this.swingPointCount; i++) {
             for (let j = 1; j < this.fixPoints.length; j++) {
                 const p0 = this.fixPoints[j - 1].points[i], p1 = this.fixPoints[j].points[i];
-                p1.restrict(p0.position, this.hoistPerPoint, p0.accel);
+                p1.restrict(p0.position, this.hoistPerPoint, p0.vel);
             }
         }
 
@@ -8151,37 +8356,30 @@ export class ScrewSwitch extends LiveActor<ScrewSwitchNrv> {
     }
 }
 
-class Button {
+class Button extends NameObj {
     private elem: HTMLElement;
     public offset = vec3.create();
-    public valid: boolean = true;
 
-    constructor(zoneAndLayer: ZoneAndLayer, sceneObjHolder: SceneObjHolder, private actor: LiveActor, offset: vec3, private radius: number, private maxDistance: number = -1) {
-        vec3.copy(this.offset, offset);
+    constructor(zoneAndLayer: ZoneAndLayer, sceneObjHolder: SceneObjHolder, private sensor: HitSensor, private maxDistance: number = -1) {
+        super(sceneObjHolder, 'Button');
+
+        connectToSceneMapObjMovement(sceneObjHolder, this);
 
         this.elem = document.createElement('div');
         this.elem.style.position = 'absolute';
         this.elem.style.pointerEvents = 'auto';
         this.elem.style.cursor = 'pointer';
         this.elem.onclick = () => {
-            this.actor.receiveMessage(sceneObjHolder, MessageType.NoclipButton_Click, null, null);
+            sendArbitraryMsg(sceneObjHolder, MessageType.NoclipButton_Click, this.sensor, this.sensor);
         };
         sceneObjHolder.uiContainer.appendChild(this.elem);
     }
 
-    public validate(): void {
-        this.valid = true;
-    }
-
-    public invalidate(): void {
-        this.valid = false;
-    }
-
-    public move(sceneObjHolder: SceneObjHolder): void {
-        let visible = this.valid && isValidDraw(this.actor);
+    public override movement(sceneObjHolder: SceneObjHolder): void {
+        let visible = isValidDraw(this.sensor.actor) && this.sensor.isValid();
 
         if (visible && this.maxDistance >= 0) {
-            if (calcDistToCamera(this.actor, sceneObjHolder.viewerInput.camera) >= this.maxDistance)
+            if (calcDistToCamera(this.sensor.actor, sceneObjHolder.viewerInput.camera) >= this.maxDistance)
                 visible = false;
         }
 
@@ -8190,8 +8388,7 @@ class Button {
             const camera = sceneObjHolder.viewerInput.camera;
 
             // View-space point
-            vec3.add(scratchVec3, this.actor.translation, this.offset);
-            transformVec3Mat4w1(scratchVec3b, camera.viewMatrix, scratchVec3);
+            transformVec3Mat4w1(scratchVec3b, camera.viewMatrix, this.sensor.center);
 
             vec3.transformMat4(scratchVec3c, scratchVec3b, camera.projectionMatrix);
             screenX = (scratchVec3c[0] * 0.5 + 0.5) * window.innerWidth;
@@ -8200,7 +8397,7 @@ class Button {
                 visible = false;
 
             if (visible) {
-                scratchVec3b[0] += this.radius;
+                scratchVec3b[0] += this.sensor.radius;
                 vec3.transformMat4(scratchVec3c, scratchVec3b, camera.projectionMatrix);
                 screenRadius = ((scratchVec3c[0] * 0.5 + 0.5) * window.innerWidth) - screenX;
             }
@@ -8258,13 +8455,8 @@ export class ScrewSwitchReverse extends LiveActor<ScrewSwitchReverseNrv> {
         this.makeActorAppeared(sceneObjHolder);
 
         vec3.set(scratchVec3, 0, 100, 0);
-        this.button = new Button(zoneAndLayer, sceneObjHolder, this, scratchVec3, 120.0, 5000.0);
-    }
-
-    public override movement(sceneObjHolder: SceneObjHolder): void {
-        super.movement(sceneObjHolder);
-
-        this.button.move(sceneObjHolder);
+        const buttonSensor = addHitSensor(sceneObjHolder, this, 'button', HitSensorType.MapObj, 0, 120.0, scratchVec3)
+        this.button = new Button(zoneAndLayer, sceneObjHolder, buttonSensor, 5000.0);
     }
 
     public override receiveMessage(sceneObjHolder: SceneObjHolder, messageType: MessageType, otherSensor: HitSensor | null, thisSensor: HitSensor | null): boolean {
@@ -8280,13 +8472,90 @@ export class ScrewSwitchReverse extends LiveActor<ScrewSwitchReverseNrv> {
         if (currentNerve === ScrewSwitchReverseNrv.Screw) {
             if (isFirstStep(this)) {
                 startBck(this, 'ScrewSwitchReverseOn');
-                this.button.invalidate();
+                invalidateHitSensor(this, 'button');
             }
 
             if (isBckStopped(this)) {
                 this.stageSwitchCtrl!.onSwitchA(sceneObjHolder);
                 this.makeActorDead(sceneObjHolder);
             }
+        }
+    }
+}
+
+const enum SpinLeverSwitchNrv { Wait, SwitchOn, End }
+export class SpinLeverSwitch extends LiveActor<SpinLeverSwitchNrv> {
+    private button: Button;
+    private mapObjConnector: MapObjConnector;
+
+    constructor(zoneAndLayer: ZoneAndLayer, sceneObjHolder: SceneObjHolder, infoIter: JMapInfoIter) {
+        super(zoneAndLayer, sceneObjHolder, 'SpinLeverSwitch');
+
+        this.mapObjConnector = new MapObjConnector(this);
+
+        initDefaultPos(sceneObjHolder, this, infoIter);
+        this.initModelManagerWithAnm(sceneObjHolder, "SpinLeverSwitch");
+        connectToSceneMapObj(sceneObjHolder, this);
+        this.initHitSensor();
+        const bodySensor = addBodyMessageSensorMapObj(sceneObjHolder, this);
+        const spinSensor = addHitSensorAtJoint(sceneObjHolder, this, 'spin', 'Spin', HitSensorType.MapObj, 4, 50.0, Vec3Zero);
+        initCollisionParts(sceneObjHolder, this, 'SpinLeverSwitch', bodySensor);
+        this.initEffectKeeper(sceneObjHolder, null);
+        // initSound
+        if (useStageSwitchWriteA(sceneObjHolder, this, infoIter)) {
+            this.initNerve(SpinLeverSwitchNrv.Wait);
+        } else {
+            startBck(this, 'On');
+            setBckFrameAndStop(this, getBckFrameMax(this));
+            startBrk(this, 'On');
+            setBrkFrameAndStop(this, getBrkFrameMax(this));
+            this.initNerve(SpinLeverSwitchNrv.End);
+        }
+
+        this.makeActorAppeared(sceneObjHolder);
+
+        this.button = new Button(zoneAndLayer, sceneObjHolder, spinSensor, 5000.0);
+    }
+
+    public override initAfterPlacement(sceneObjHolder: SceneObjHolder): void {
+        this.mapObjConnector.attachToUnder(sceneObjHolder);
+    }
+
+    public override calcAndSetBaseMtx(sceneObjHolder: SceneObjHolder): void {
+        super.calcAndSetBaseMtx(sceneObjHolder);
+        this.mapObjConnector.connect();
+    }
+
+    public override receiveMessage(sceneObjHolder: SceneObjHolder, messageType: MessageType, otherSensor: HitSensor | null, thisSensor: HitSensor | null): boolean {
+        if (messageType === MessageType.NoclipButton_Click) {
+            this.setNerve(SpinLeverSwitchNrv.SwitchOn);
+            return true;
+        } else {
+            return super.receiveMessage(sceneObjHolder, messageType, otherSensor, thisSensor);
+        }
+    }
+
+    protected override updateSpine(sceneObjHolder: SceneObjHolder, currentNerve: SpinLeverSwitchNrv, deltaTimeFrames: number): void {
+        super.updateSpine(sceneObjHolder, currentNerve, deltaTimeFrames);
+
+        if (currentNerve === SpinLeverSwitchNrv.Wait) {
+            if (isFirstStep(this)) {
+                startBck(this, 'Wait');
+                startBrk(this, 'On');
+                setBrkFrameAndStop(this, 0);
+            }
+        } else if (currentNerve === SpinLeverSwitchNrv.SwitchOn) {
+            if (isFirstStep(this)) {
+                invalidateHitSensor(this, 'spin');
+                startBck(this, 'On');
+                startBrk(this, 'On');
+            }
+
+            if (isCrossedStep(this, 15))
+                this.stageSwitchCtrl!.onSwitchA(sceneObjHolder);
+
+            if (isBckStopped(this))
+                this.setNerve(SpinLeverSwitchNrv.End);
         }
     }
 }
@@ -9262,5 +9531,62 @@ export class MorphItemObjNeo extends LiveActor<MorphItemObjNeoNrv> {
             sceneObjHolder.modelCache.requestObjectData('CrystalBox');
             sceneObjHolder.modelCache.requestObjectData('CrystalBoxBreak');
         }
+    }
+}
+
+export class GalaxyCometScreenFilter extends LayoutActor {
+    constructor(sceneObjHolder: SceneObjHolder) {
+        super(sceneObjHolder, 'GalaxyCometScreenFilter');
+        connectToScene(sceneObjHolder, this, MovementType.Layout, CalcAnimType.Layout, DrawBufferType.None, DrawType.CometScreenFilter);
+        this.initLayoutManager(sceneObjHolder, 'CometScreenFilter', 1);
+    }
+
+    private getCometNameIdFromString(name: string | null): number | null {
+        if (name === null || name === '')
+            return null;
+
+        const cometNames = ['Red', 'Dark', 'Ghost', 'Quick', 'Purple', 'Black'];
+        const id = cometNames.indexOf(name);
+        assert(id >= 0);
+        return id;
+    }
+
+    private getCometColorAnimFrameFromId(id: number): number {
+        const ids = [0.0, 4.0, 1.0, 2.0, 3.0, 0.0];
+        return ids[id];
+    }
+
+    public override scenarioChanged(sceneObjHolder: SceneObjHolder): void {
+        super.scenarioChanged(sceneObjHolder);
+
+        const cometName = sceneObjHolder.scenarioData.scenarioDataIter.getValueString('Comet');
+        const cometNameId = this.getCometNameIdFromString(cometName);
+        if (cometNameId !== null) {
+            this.startAnim('Color', 0);
+            const frame = this.getCometColorAnimFrameFromId(cometNameId);
+            this.setAnimFrameAndStop(frame, 0);
+            this.makeActorAppeared(sceneObjHolder);
+        } else {
+            this.makeActorDead(sceneObjHolder);
+        }
+    }
+
+    public override movement(sceneObjHolder: SceneObjHolder): void {
+        super.movement(sceneObjHolder);
+
+        // Adjust position/scale for our modified projection matrix
+        // TODO(jstpierre): Make this work automatically in LayoutActor?
+        const pane = this.layoutManager!.getRootPane();
+        const w = sceneObjHolder.viewerInput.backbufferWidth;
+        const h = sceneObjHolder.viewerInput.backbufferHeight;
+        pane.translation[0] = w / 2;
+        pane.translation[1] = h / 2;
+
+        pane.scale[0] = w / 608;
+        pane.scale[1] = h / 456;
+    }
+
+    public static override requestArchives(sceneObjHolder: SceneObjHolder): void {
+        sceneObjHolder.modelCache.requestLayoutData('CometScreenFilter');
     }
 }

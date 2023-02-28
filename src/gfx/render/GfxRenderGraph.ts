@@ -1,5 +1,5 @@
 
-import { GfxColor, GfxRenderTarget, GfxDevice, GfxFormat, GfxRenderPass, GfxRenderPassDescriptor, GfxTexture, GfxTextureDimension, GfxTextureUsage } from "../platform/GfxPlatform";
+import { GfxColor, GfxRenderTarget, GfxDevice, GfxFormat, GfxRenderPass, GfxRenderPassDescriptor, GfxTexture, GfxTextureDimension, GfxTextureUsage, GfxComputePass } from "../platform/GfxPlatform";
 import { GfxQueryPool } from "../platform/GfxPlatformImpl";
 import { assert, assertExists } from "../platform/GfxPlatformUtil";
 
@@ -21,6 +21,7 @@ import { assert, assertExists } from "../platform/GfxPlatformUtil";
 export class GfxrRenderTargetDescription {
     public width: number = 0;
     public height: number = 0;
+    public numLevels: number = 1;
     public sampleCount: number = 0;
 
     public colorClearColor: Readonly<GfxColor> | 'load' = 'load';
@@ -56,6 +57,7 @@ export const enum GfxrAttachmentSlot {
 }
 
 type PassExecFunc = (passRenderer: GfxRenderPass, scope: GfxrPassScope) => void;
+type ComputePassExecFunc = (pass: GfxComputePass, scope: GfxrPassScope) => void;
 type PassPostFunc = (scope: GfxrPassScope) => void;
 
 declare const isRenderTargetID: unique symbol;
@@ -64,12 +66,29 @@ export type GfxrRenderTargetID = number & { [isRenderTargetID]: true };
 declare const isResolveTextureID: unique symbol;
 export type GfxrResolveTextureID = number & { [isResolveTextureID]: true };
 
-export interface GfxrPass {
+interface GfxrPassBase {
     /**
      * Set the debug name of a given pass. Strongly encouraged.
      */
-    setDebugName(debugName: string): void;
+     setDebugName(debugName: string): void;
 
+    /**
+     * Attach the resolve texture ID to the given pass. All resolve textures used within the pass
+     * must be attached before-hand in order for the scheduler to properly allocate our resolve texture.
+     */
+    attachResolveTexture(resolveTextureID: GfxrResolveTextureID): void;
+
+    /**
+     * Set the pass's post callback. This will be immediately right after the pass is submitted,
+     * allowing you to do additional custom work once the pass has been done. This is expected to be
+     * seldomly used.
+     */
+    post(func: PassPostFunc): void;
+
+    addExtraRef(renderTargetID: GfxrAttachmentSlot): void;
+}
+
+export interface GfxrPass extends GfxrPassBase {
     /**
      * Set the viewport for the given render pass in *normalized* coordinates (0..1).
      * Not required; defaults to full viewport.
@@ -86,7 +105,7 @@ export interface GfxrPass {
      *
      * This determines which render targets this pass will render to.
      */
-    attachRenderTargetID(attachmentSlot: GfxrAttachmentSlot, renderTargetID: GfxrRenderTargetID): void;
+    attachRenderTargetID(attachmentSlot: GfxrAttachmentSlot, renderTargetID: GfxrRenderTargetID, level?: number): void;
 
     /**
      * Attach the occlusion query pool used by this rendering pass.
@@ -94,25 +113,18 @@ export interface GfxrPass {
     attachOcclusionQueryPool(queryPool: GfxQueryPool): void;
 
     /**
-     * Attach the resolve texture ID to the given pass. All resolve textures used within the pass
-     * must be attached before-hand in order for the scheduler to properly allocate our resolve texture.
-     */
-    attachResolveTexture(resolveTextureID: GfxrResolveTextureID): void;
-
-    /**
      * Set the pass's execution callback. This will be called with the {@see GfxRenderPass} for the
      * pass, along with the {@see GfxrPassScope} to access any resources that the system has allocated.
      */
     exec(func: PassExecFunc): void;
+}
 
+export interface GfxrComputePass extends GfxrPassBase {
     /**
-     * Set the pass's post callback. This will be immediately right after the pass is submitted,
-     * allowing you to do additional custom work once the pass has been done. This is expected to be
-     * seldomly used.
+     * Set the pass's execution callback. This will be called with the {@see GfxRenderPass} for the
+     * pass, along with the {@see GfxrPassScope} to access any resources that the system has allocated.
      */
-    post(func: PassPostFunc): void;
-
-    addExtraRef(renderTargetID: GfxrAttachmentSlot): void;
+    exec(func: ComputePassExecFunc): void;
 }
 
 class PassImpl implements GfxrPass {
@@ -122,10 +134,12 @@ class PassImpl implements GfxrPass {
 
     // GfxrAttachmentSlot => renderTargetID
     public renderTargetIDs: GfxrRenderTargetID[] = [];
+    public renderTargetLevels: number[] = [];
     // GfxrAttachmentSlot => resolveTextureID
     public resolveTextureOutputIDs: GfxrResolveTextureID[] = [];
     // GfxrAttachmentSlot => GfxTexture
     public resolveTextureOutputExternalTextures: GfxTexture[] = [];
+    public resolveTextureOutputExternalTextureLevel: number[] = [];
     // List of resolveTextureIDs that we have a reference to.
     public resolveTextureInputIDs: GfxrResolveTextureID[] = [];
     // GfxrAttachmentSlot => refcount.
@@ -138,7 +152,9 @@ class PassImpl implements GfxrPass {
     // Execution state computed by scheduling.
     public descriptor: GfxRenderPassDescriptor = {
         colorAttachment: [],
+        colorAttachmentLevel: [],
         colorResolveTo: [],
+        colorResolveToLevel: [],
         colorStore: [],
         depthStencilAttachment: null,
         depthStencilResolveTo: null,
@@ -155,11 +171,14 @@ class PassImpl implements GfxrPass {
     public viewportH: number = 1;
 
     // Execution callback from user.
-    public execFunc: PassExecFunc | null = null;
+    public execFunc: PassExecFunc | ComputePassExecFunc | null = null;
     public postFunc: PassPostFunc | null = null;
 
     // Misc. state.
     public debugThumbnails: boolean[] = [];
+
+    constructor(public passType: 'render' | 'compute') {
+    }
 
     public setDebugName(debugName: string): void {
         this.debugName = debugName;
@@ -176,9 +195,10 @@ class PassImpl implements GfxrPass {
         this.debugThumbnails[attachmentSlot] = true;
     }
 
-    public attachRenderTargetID(attachmentSlot: GfxrAttachmentSlot, renderTargetID: GfxrRenderTargetID): void {
+    public attachRenderTargetID(attachmentSlot: GfxrAttachmentSlot, renderTargetID: GfxrRenderTargetID, level: number = 0): void {
         assert(this.renderTargetIDs[attachmentSlot] === undefined);
         this.renderTargetIDs[attachmentSlot] = renderTargetID;
+        this.renderTargetLevels[attachmentSlot] = level;
     }
 
     public attachResolveTexture(resolveTextureID: GfxrResolveTextureID): void {
@@ -189,11 +209,7 @@ class PassImpl implements GfxrPass {
         this.descriptor.occlusionQueryPool = queryPool;
     }
 
-    public resolveToExternalTexture(attachmentSlot: GfxrAttachmentSlot, texture: GfxTexture): void {
-        this.resolveTextureOutputExternalTextures[attachmentSlot] = texture;
-    }
-
-    public exec(func: PassExecFunc): void {
+    public exec(func: any): void {
         assert(this.execFunc === null);
         this.execFunc = func;
     }
@@ -228,7 +244,7 @@ export interface GfxrPassScope {
      * Retrieve the underlying texture resource for a given attachment slot {@param slot}. This is not
      * guaranteed to be a single-sampled texture; to resolve the resource, see {@see getResolveTextureForID}.
      */
-     getRenderTargetTexture(slot: GfxrAttachmentSlot): GfxTexture | null;
+    getRenderTargetTexture(slot: GfxrAttachmentSlot): GfxTexture | null;
 }
 
 // These classes might go away...
@@ -245,7 +261,8 @@ class GraphImpl {
     public renderTargetDebugNames: string[] = [];
 }
 
-type PassSetupFunc = (renderPass: GfxrPass) => void;
+type PassSetupFunc = (pass: GfxrPass) => void;
+type ComputePassSetupFunc = (pass: GfxrComputePass) => void;
 
 export interface GfxrGraphBuilder {
     /**
@@ -255,6 +272,7 @@ export interface GfxrGraphBuilder {
      * by closures.
      */
     pushPass(setupFunc: PassSetupFunc): void;
+    pushComputePass(setupFunc: ComputePassSetupFunc): void;
 
     /**
      * Tell the system about a render target with the given descriptions. Render targets
@@ -306,7 +324,7 @@ export interface GfxrGraphBuilder {
      *
      * Warning: This API might change in the near future.
      */
-    resolveRenderTargetToExternalTexture(renderTargetID: GfxrRenderTargetID, texture: GfxTexture): void;
+    resolveRenderTargetToExternalTexture(renderTargetID: GfxrRenderTargetID, texture: GfxTexture, level?: number): void;
 
     /**
      * Return the description that a render target was created with. This allows the creator to
@@ -333,11 +351,11 @@ class RenderTarget {
 
     public readonly dimension = GfxTextureDimension.n2D;
     public readonly depth = 1;
-    public readonly numLevels = 1;
 
     public pixelFormat: GfxFormat;
     public width: number = 0;
     public height: number = 0;
+    public numLevels: number = 1;
     public sampleCount: number = 0;
     public usage: GfxTextureUsage = GfxTextureUsage.RenderTarget;
 
@@ -350,6 +368,7 @@ class RenderTarget {
         this.pixelFormat = desc.pixelFormat;
         this.width = desc.width;
         this.height = desc.height;
+        this.numLevels = desc.numLevels;
         this.sampleCount = desc.sampleCount;
 
         assert(this.sampleCount >= 1);
@@ -373,7 +392,7 @@ class RenderTarget {
     }
 
     public matchesDescription(desc: Readonly<GfxrRenderTargetDescription>): boolean {
-        return this.pixelFormat === desc.pixelFormat && this.width === desc.width && this.height === desc.height && this.sampleCount === desc.sampleCount;
+        return this.pixelFormat === desc.pixelFormat && this.width === desc.width && this.height === desc.height && this.numLevels === desc.numLevels && this.sampleCount === desc.sampleCount;
     }
 
     public reset(desc: Readonly<GfxrRenderTargetDescription>): void {
@@ -490,6 +509,7 @@ export interface GfxrRenderGraph {
 interface ResolveParam {
     resolveTo: GfxTexture | null;
     store: boolean;
+    level: number;
 }
 
 export class GfxrRenderGraphImpl implements GfxrRenderGraph, GfxrGraphBuilder, GfxrRenderGraphImpl {
@@ -543,8 +563,14 @@ export class GfxrRenderGraphImpl implements GfxrRenderGraph, GfxrGraphBuilder, G
     }
 
     public pushPass(setupFunc: PassSetupFunc): void {
-        const pass = new PassImpl();
+        const pass = new PassImpl('render');
         setupFunc(pass);
+        this.currentGraph!.passes.push(pass);
+    }
+
+    public pushComputePass(setupFunc: ComputePassSetupFunc): void {
+        const pass = new PassImpl('compute');
+        setupFunc(pass as GfxrComputePass);
         this.currentGraph!.passes.push(pass);
     }
 
@@ -604,12 +630,13 @@ export class GfxrRenderGraphImpl implements GfxrRenderGraph, GfxrGraphBuilder, G
         return this.resolveRenderTargetPassAttachmentSlot(renderPass, attachmentSlot);
     }
 
-    public resolveRenderTargetToExternalTexture(renderTargetID: GfxrRenderTargetID, texture: GfxTexture): void {
+    public resolveRenderTargetToExternalTexture(renderTargetID: GfxrRenderTargetID, texture: GfxTexture, level: number = 0): void {
         const renderPass = this.findPassForResolveRenderTarget(renderTargetID);
         const attachmentSlot: GfxrAttachmentSlot = renderPass.renderTargetIDs.indexOf(renderTargetID);
         // We shouldn't be resolving to a resolve texture ID in this case.
         assert(renderPass.resolveTextureOutputIDs[attachmentSlot] === undefined);
         renderPass.resolveTextureOutputExternalTextures[attachmentSlot] = texture;
+        renderPass.resolveTextureOutputExternalTextureLevel[attachmentSlot] = level;
     }
 
     public getRenderTargetDescription(renderTargetID: number): Readonly<GfxrRenderTargetDescription> {
@@ -727,6 +754,7 @@ export class GfxrRenderGraphImpl implements GfxrRenderGraph, GfxrGraphBuilder, G
 
         let resolveTo: GfxTexture | null = null;
         let store = false;
+        let level = 0;
 
         if (this.renderTargetOutputCount[renderTargetID] > 1) {
             // A future pass is going to render to this RT, we need to store the results.
@@ -759,11 +787,12 @@ export class GfxrRenderGraphImpl implements GfxrRenderGraph, GfxrGraphBuilder, G
             }
         } else if (hasExternalTexture) {
             resolveTo = externalTexture;
+            level = pass.resolveTextureOutputExternalTextureLevel[slot];
         } else {
             resolveTo = null;
         }
 
-        return { resolveTo, store };
+        return { resolveTo, store, level };
     }
 
     private schedulePass(graph: GraphImpl, pass: PassImpl) {
@@ -774,8 +803,10 @@ export class GfxrRenderGraphImpl implements GfxrRenderGraph, GfxrGraphBuilder, G
             const colorRenderTarget = this.acquireRenderTargetForID(graph, colorRenderTargetID);
             pass.renderTargets[slot] = colorRenderTarget;
             pass.descriptor.colorAttachment[slot] = colorRenderTarget !== null ? colorRenderTarget.attachment : null;
-            const { resolveTo, store } = this.determineResolveParam(graph, pass, slot);
+            pass.descriptor.colorAttachmentLevel[slot] = pass.renderTargetLevels[slot];
+            const { resolveTo, store, level } = this.determineResolveParam(graph, pass, slot);
             pass.descriptor.colorResolveTo[slot] = resolveTo;
+            pass.descriptor.colorResolveToLevel[slot] = level;
             pass.descriptor.colorStore[slot] = store;
             pass.descriptor.colorClearColor[slot] = (colorRenderTarget !== null && colorRenderTarget.needsClear) ? graph.renderTargetDescriptions[colorRenderTargetID].colorClearColor : 'load';
         }
@@ -795,14 +826,17 @@ export class GfxrRenderGraphImpl implements GfxrRenderGraph, GfxrGraphBuilder, G
             if (!renderTarget)
                 continue;
 
+            const width = renderTarget.width >>> pass.renderTargetLevels[i];
+            const height = renderTarget.height >>> pass.renderTargetLevels[i];
+
             if (rtWidth === 0) {
-                rtWidth = renderTarget.width;
-                rtHeight = renderTarget.height;
+                rtWidth = width;
+                rtHeight = height;
                 rtSampleCount = renderTarget.sampleCount;
             }
 
-            assert(renderTarget.width === rtWidth);
-            assert(renderTarget.height === rtHeight);
+            assert(width === rtWidth);
+            assert(height === rtHeight);
             assert(renderTarget.sampleCount === rtSampleCount);
             renderTarget.needsClear = false;
         }
@@ -893,23 +927,46 @@ export class GfxrRenderGraphImpl implements GfxrRenderGraph, GfxrGraphBuilder, G
     //#endregion
 
     //#region Execution
-    private execPass(pass: PassImpl): void {
-        assert(this.currentPass === null);
-        this.currentPass = pass;
-
+    private execRenderPass(pass: PassImpl): void {
         const renderPass = this.device.createRenderPass(pass.descriptor);
+
         renderPass.beginDebugGroup(pass.debugName);
 
         renderPass.setViewport(pass.viewportX, pass.viewportY, pass.viewportW, pass.viewportH);
 
         if (pass.execFunc !== null)
-            pass.execFunc(renderPass, this);
+            (pass.execFunc as PassExecFunc)(renderPass, this);
 
         renderPass.endDebugGroup();
         this.device.submitPass(renderPass);
 
         if (pass.postFunc !== null)
             pass.postFunc(this);
+    }
+
+    private execComputePass(pass: PassImpl): void {
+        const computePass = this.device.createComputePass();
+
+        computePass.beginDebugGroup(pass.debugName);
+
+        if (pass.execFunc !== null)
+            (pass.execFunc as ComputePassExecFunc)(computePass, this);
+
+        computePass.endDebugGroup();
+        this.device.submitPass(computePass);
+
+        if (pass.postFunc !== null)
+            pass.postFunc(this);
+    }
+
+    private execPass(pass: PassImpl): void {
+        assert(this.currentPass === null);
+        this.currentPass = pass;
+
+        if (pass.passType === 'render')
+            this.execRenderPass(pass);
+        else if (pass.passType === 'compute')
+            this.execComputePass(pass);
 
         this.currentPass = null;
     }

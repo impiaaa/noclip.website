@@ -2,7 +2,7 @@
 // Source Engine BSP.
 
 import ArrayBufferSlice, { ArrayBuffer_slice } from "../ArrayBufferSlice";
-import { readString, assertExists, assert, nArray, decodeString } from "../util";
+import { readString, assert, nArray, decodeString, ensureInList } from "../util";
 import { vec4, vec3, vec2, ReadonlyVec3, ReadonlyVec4, ReadonlyVec2 } from "gl-matrix";
 import { getTriangleIndexCountForTopologyIndexCount, GfxTopology, convertToTrianglesRange } from "../gfx/helpers/TopologyHelpers";
 import { parseZipFile, ZipFile } from "../ZipFile";
@@ -14,6 +14,7 @@ import { Color, colorNewFromRGBA } from "../Color";
 import { unpackColorRGBExp32 } from "./Materials";
 import { lerp, saturate } from "../MathHelpers";
 import { pairs2obj, ValveKeyValueParser, VKFPair } from "./VMT";
+import { downloadBuffer, downloadBufferSlice } from "../DownloadUtils";
 
 const enum LumpType {
     ENTITIES                  = 0,
@@ -757,11 +758,6 @@ export interface Cubemap {
     filename: string;
 }
 
-function ensureInList<T>(L: T[], v: T): void {
-    if (!L.includes(v))
-        L.push(v);
-}
-
 class ResizableArrayBuffer {
     private buffer: ArrayBuffer;
     private byteSize: number;
@@ -840,7 +836,7 @@ export class BSPFile {
     public vertexData: ArrayBuffer;
 
     constructor(buffer: ArrayBufferSlice, mapname: string) {
-        assertExists(readString(buffer, 0x00, 0x04) === 'VBSP');
+        assert(readString(buffer, 0x00, 0x04) === 'VBSP');
         const view = buffer.createDataView();
         this.version = view.getUint32(0x04, true);
         assert(this.version === 19 || this.version === 20 || this.version === 21  || this.version === 22);
@@ -975,6 +971,7 @@ export class BSPFile {
 
         // Parse materials.
         const pakfileData = getLumpData(LumpType.PAKFILE);
+        // downloadBufferSlice('de_prime_pakfile.zip', pakfileData);
         this.pakfile = parseZipFile(pakfileData);
 
         // Parse out BSP tree.
@@ -1908,7 +1905,6 @@ export class BSPFile {
     }
 }
 
-// This is in the same file because it also parses keyfiles, even though it's not material-related.
 export interface BSPEntity {
     classname: string;
     [k: string]: string;

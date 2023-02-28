@@ -123,6 +123,43 @@ function get_mipmap_size(format: D3DFormat, width: number, height: number, depth
     }
 }
 
+
+function convert_data(d3d_format: D3DFormat, data: ArrayBufferSlice): ArrayBufferView {
+    if (d3d_format === D3DFormat.L16) {
+        return data.createTypedArray(Uint16Array);
+    } else if (d3d_format === D3DFormat.A8R8G8B8) {
+        // BGRA8888 => RGBA8888
+        const src = data.createDataView();
+        const n = data.byteLength;
+        const dst = new Uint8Array(n);
+        let p = 0;
+        for (let i = 0; i < n;) {
+            dst[i++] = src.getUint8(p + 2);
+            dst[i++] = src.getUint8(p + 1);
+            dst[i++] = src.getUint8(p + 0);
+            dst[i++] = src.getUint8(p + 3);
+            p += 4;
+        }
+        return dst;
+    } else if (d3d_format === D3DFormat.X8R8G8B8) {
+        // BGRX8888 => RGBA8888
+        const src = data.createDataView();
+        const n = data.byteLength;
+        const dst = new Uint8Array(n);
+        let p = 0;
+        for (let i = 0; i < n;) {
+            dst[i++] = src.getUint8(p + 2);
+            dst[i++] = src.getUint8(p + 1);
+            dst[i++] = src.getUint8(p + 0);
+            dst[i++] = 0xFF;
+            p += 4;
+        }
+        return dst;
+    } else {
+        return data.createTypedArray(Uint8Array);
+    }
+}
+
 export class Texture_Asset {
     private width: number;
     private height: number;
@@ -171,12 +208,8 @@ export class Texture_Asset {
         let w = this.width, h = this.height, d = this.depth;
         for (let i = 0; i < this.mipmap_count; i++) {
             const sliceBytes = get_mipmap_size(d3d_format, w, h, d);
-            const bytes = stream.readBytes(sliceBytes);
-            if (d3d_format === D3DFormat.L16) {
-                levelData.push(bytes.createTypedArray(Uint16Array));
-            } else {
-                levelData.push(bytes.createTypedArray(Uint8Array));
-            }
+            const data = convert_data(d3d_format, stream.readBytes(sliceBytes));
+            levelData.push(data);
             w = Math.max((w >>> 1), 1);
             h = Math.max((h >>> 1), 1);
             d = Math.max((d >>> 1), 1);
@@ -424,9 +457,18 @@ interface Collision_Mesh {
 interface Skeleton {
 }
 
+function calculate_instance_count(material: Render_Material): number {
+    // TODO(jstpierre): Where does this negation come from?
+    if (material.material_type === Material_Type.Hedge)
+        return -material.usage_detail;
+
+    return 1;
+}
+
 class Device_Mesh {
     private index_count: number;
     private vertex_count: number;
+    private instance_count: number;
 
     private vertex_buffer: GfxBuffer;
     private index_buffer: GfxBuffer | null;
@@ -436,11 +478,12 @@ class Device_Mesh {
     public material_index: number;
     public detail_level: number;
 
-    constructor(device: GfxDevice, cache: GfxRenderCache, private sub_mesh_asset: Sub_Mesh_Asset) {
+    constructor(device: GfxDevice, cache: GfxRenderCache, mesh_asset: Mesh_Asset, private sub_mesh_asset: Sub_Mesh_Asset) {
         this.detail_level = sub_mesh_asset.detail_level;
         this.material_index = sub_mesh_asset.material_index;
         this.vertex_count = sub_mesh_asset.vertex_count;
         this.index_count = sub_mesh_asset.index_count;
+        this.instance_count = calculate_instance_count(mesh_asset.material_array[this.material_index]);
 
         this.vertex_buffer = makeStaticDataBufferFromSlice(device, GfxBufferUsage.Vertex, sub_mesh_asset.vertex_data);
 
@@ -571,7 +614,7 @@ class Device_Mesh {
         renderInst.setInputLayoutAndState(this.input_layout, this.input_state);
 
         if (this.index_count > 0)
-            renderInst.drawIndexes(this.index_count);
+            renderInst.drawIndexesInstanced(this.index_count, this.instance_count);
         else
             renderInst.drawPrimitives(this.vertex_count);
     }
@@ -595,7 +638,7 @@ export class Mesh_Asset {
     public collision_mesh: Collision_Mesh;
     public skeleton: Skeleton | null;
 
-    public device_mesh_array: Device_Mesh[];
+    public device_mesh_array: Device_Mesh[] = [];
 
     constructor(device: GfxDevice, cache: GfxRenderCache, version: number, stream: Stream, name: string) {
         this.checksum = stream.readUint32();
@@ -610,7 +653,7 @@ export class Mesh_Asset {
         const z_sub_mesh_array = unpack_Array(stream, unpack_Sub_Mesh_Asset);
 
         this.material_array = material_array;
-        this.device_mesh_array = sub_mesh_array.map((asset) => new Device_Mesh(device, cache, asset));
+        this.device_mesh_array = sub_mesh_array.map((asset) => new Device_Mesh(device, cache, this, asset));
 
         this.collision_mesh = {};
         this.skeleton = null;

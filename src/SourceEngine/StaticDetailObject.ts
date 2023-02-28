@@ -2,7 +2,7 @@
 import ArrayBufferSlice from "../ArrayBufferSlice";
 import { assert, readString } from "../util";
 import { vec4, vec3, mat4, ReadonlyVec3 } from "gl-matrix";
-import { Color, colorClampLDR, colorCopy, colorNewFromRGBA } from "../Color";
+import { Color, colorClampLDR, colorCopy, colorFromRGBA8, colorNewCopy, colorNewFromRGBA, colorNewFromRGBA8, White } from "../Color";
 import { unpackColorRGBExp32, BaseMaterial, MaterialShaderTemplateBase, LightCache, EntityMaterialParameters } from "./Materials";
 import { SourceRenderContext, BSPRenderer } from "./Main";
 import { GfxInputLayout, GfxVertexAttributeDescriptor, GfxInputLayoutBufferDescriptor, GfxFormat, GfxVertexBufferFrequency, GfxDevice, GfxBuffer, GfxBufferUsage, GfxBufferFrequencyHint, GfxInputState } from "../gfx/platform/GfxPlatform";
@@ -190,11 +190,11 @@ export class DetailPropLeafRenderer {
         const device = renderContext.device, cache = renderContext.renderCache;
 
         const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
-            { location: MaterialShaderTemplateBase.a_Position, bufferIndex: 0, bufferByteOffset: 0*0x04, format: GfxFormat.F32_RGB, },
-            { location: MaterialShaderTemplateBase.a_TexCoord, bufferIndex: 0, bufferByteOffset: 3*0x04, format: GfxFormat.F32_RG, },
-            { location: MaterialShaderTemplateBase.a_Color,    bufferIndex: 0, bufferByteOffset: 5*0x04, format: GfxFormat.F32_RGBA, },
-            { location: MaterialShaderTemplateBase.a_Normal,   bufferIndex: 1, bufferByteOffset: 0, format: GfxFormat.F32_RGBA, },
-            { location: MaterialShaderTemplateBase.a_TangentS, bufferIndex: 1, bufferByteOffset: 0, format: GfxFormat.F32_RGBA, },
+            { location: MaterialShaderTemplateBase.a_Position,   bufferIndex: 0, bufferByteOffset: 0*0x04, format: GfxFormat.F32_RGB, },
+            { location: MaterialShaderTemplateBase.a_TexCoord01, bufferIndex: 0, bufferByteOffset: 3*0x04, format: GfxFormat.F32_RG, },
+            { location: MaterialShaderTemplateBase.a_Color,      bufferIndex: 0, bufferByteOffset: 5*0x04, format: GfxFormat.F32_RGBA, },
+            { location: MaterialShaderTemplateBase.a_Normal,     bufferIndex: 1, bufferByteOffset: 0, format: GfxFormat.F32_RGBA, },
+            { location: MaterialShaderTemplateBase.a_TangentS,   bufferIndex: 1, bufferByteOffset: 0, format: GfxFormat.F32_RGBA, },
         ];
         const vertexBufferDescriptors: GfxInputLayoutBufferDescriptor[] = [
             { byteStride: (3+2+4)*0x04, frequency: GfxVertexBufferFrequency.PerVertex, },
@@ -458,6 +458,7 @@ export function deserializeGameLump_sprp(buffer: ArrayBufferSlice, version: numb
         const lightingOriginX = sprp.getFloat32(idx + 0x2C, true);
         const lightingOriginY = sprp.getFloat32(idx + 0x30, true);
         const lightingOriginZ = sprp.getFloat32(idx + 0x34, true);
+        const diffuseModulation = colorNewCopy(White);
         idx += 0x38;
 
         let forcedFadeScale = 1.0;
@@ -491,7 +492,7 @@ export function deserializeGameLump_sprp(buffer: ArrayBufferSlice, version: numb
             // CS:GO, Portal 2
 
             if (version >= 7) {
-                const diffuseModulation = sprp.getUint32(idx + 0x00, false);
+                colorFromRGBA8(diffuseModulation, sprp.getUint32(idx + 0x00, false));
                 idx += 0x04;
             }
 
@@ -570,8 +571,10 @@ export class StaticPropRenderer {
         const spPrefix = this.bspRenderer.bsp.usingHDR ? `sp_hdr` : `sp`;
         const staticLightingData = await renderContext.filesystem.fetchFileData(`${spPrefix}_${this.staticProp.index}.vhv`);
         if (staticLightingData !== null) {
-            this.colorMeshData = new HardwareVertData(renderContext, staticLightingData);
-            this.studioModelInstance.setColorMeshData(renderContext.device, this.colorMeshData);
+            const colorMeshData = new HardwareVertData(renderContext, staticLightingData);
+            // Only support static lighting 1 right now, not static lighting 3 (HL2 basis)
+            this.colorMeshData = colorMeshData;
+            this.studioModelInstance.setColorMeshData(renderContext.renderCache, this.colorMeshData);
         }
     }
 
@@ -605,7 +608,6 @@ export class StaticPropRenderer {
         if ((this as any).debug)
             this.materialParams.lightCache!.debugDrawLights(renderContext.currentView);
 
-        computeModelMatrixPosQAngle(this.studioModelInstance.modelMatrix, this.staticProp.pos, this.staticProp.rot);
         getMatrixTranslation(this.materialParams.position, this.studioModelInstance.modelMatrix);
         this.studioModelInstance.prepareToRender(renderContext, renderInstManager);
     }

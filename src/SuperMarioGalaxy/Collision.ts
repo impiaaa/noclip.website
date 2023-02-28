@@ -1018,7 +1018,7 @@ export class Binder {
     public wallHitInfo = new HitInfo();
     public ceilingHitInfo = new HitInfo();
 
-    constructor(private hostBaseMtx: mat4 | null, private hostTranslation: vec3, private hostGravity: vec3, private hostCenterY: number, private radius: number, hitInfoCapacity: number) {
+    constructor(private hostBaseMtx: mat4 | null, private hostTranslation: vec3, private hostGravity: vec3, private hostCenterY: number, public radius: number, hitInfoCapacity: number) {
         if (hitInfoCapacity === 0) {
             // Use global scratch space.
             this.hitInfos = scratchHitInfo;
@@ -1029,7 +1029,7 @@ export class Binder {
         this.clear();
     }
 
-    public bind(sceneObjHolder: SceneObjHolder, dstVel: vec3, velOrig: ReadonlyVec3): void {
+    public bind(sceneObjHolder: SceneObjHolder, dstVel: vec3, velOrig: ReadonlyVec3, deltaTimeFrames: number): void {
         this.clear();
 
         if (sceneObjHolder.collisionDirector === null)
@@ -1069,7 +1069,7 @@ export class Binder {
         // If we hit something in one of the other ray steps, ret is MoveAlongHittedPlanes,
         // indicating we need to take some of our velocity and project it onto the hit
         // surfaces.
-        const velCurr = vec3.copy(scratchVec3f, velOrig);
+        const velCurr = vec3.scale(scratchVec3f, velOrig, deltaTimeFrames);
         let ret = this.findBindedPos(sceneObjHolder, posCurr, velCurr, false, stopped);
 
         if (ret === BinderFindBindedPositionRet.NoCollide) {
@@ -1332,6 +1332,10 @@ export function setBinderExceptActor(actor: LiveActor, except: LiveActor): void 
 
 export function setBinderOffsetVec(actor: LiveActor, offsetVec: ReadonlyVec3): void {
     actor.binder!.hostOffsetVec = offsetVec;
+}
+
+export function setBinderRadius(actor: LiveActor, radius: number): void {
+    actor.binder!.radius = radius;
 }
 
 export function setBinderIgnoreMovingCollision(actor: LiveActor): void {

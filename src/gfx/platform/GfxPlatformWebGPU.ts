@@ -1,6 +1,6 @@
 
-import { GfxSwapChain, GfxDevice, GfxTexture, GfxBuffer, GfxBufferFrequencyHint, GfxBufferUsage, GfxBindingsDescriptor, GfxTextureDescriptor, GfxSamplerDescriptor, GfxInputLayoutDescriptor, GfxInputLayout, GfxVertexBufferDescriptor, GfxInputState, GfxRenderPipelineDescriptor, GfxRenderPipeline, GfxSampler, GfxProgram, GfxBindings, GfxWrapMode, GfxTexFilterMode, GfxMipFilterMode, GfxDebugGroup, GfxPass, GfxRenderPassDescriptor, GfxRenderPass, GfxDeviceLimits, GfxFormat, GfxVendorInfo, GfxTextureDimension, GfxBindingLayoutDescriptor, GfxPrimitiveTopology, GfxMegaStateDescriptor, GfxCullMode, GfxFrontFaceMode, GfxAttachmentState, GfxChannelBlendState, GfxBlendFactor, GfxBlendMode, GfxCompareMode, GfxVertexBufferFrequency, GfxIndexBufferDescriptor, GfxProgramDescriptor, GfxProgramDescriptorSimple, GfxRenderTarget, GfxRenderTargetDescriptor, makeTextureDescriptor2D, GfxClipSpaceNearZ, GfxTextureUsage, GfxViewportOrigin, GfxQueryPoolType, GfxBindingLayoutSamplerDescriptor, GfxSamplerFormatKind } from "./GfxPlatform";
-import { _T, GfxResource, GfxReadback, GfxQueryPool, defaultBindingLayoutSamplerDescriptor } from "./GfxPlatformImpl";
+import { GfxSwapChain, GfxDevice, GfxTexture, GfxBuffer, GfxBufferFrequencyHint, GfxBufferUsage, GfxBindingsDescriptor, GfxTextureDescriptor, GfxSamplerDescriptor, GfxInputLayoutDescriptor, GfxInputLayout, GfxVertexBufferDescriptor, GfxInputState, GfxRenderPipelineDescriptor, GfxRenderPipeline, GfxSampler, GfxProgram, GfxBindings, GfxWrapMode, GfxTexFilterMode, GfxMipFilterMode, GfxDebugGroup, GfxPass, GfxRenderPassDescriptor, GfxRenderPass, GfxDeviceLimits, GfxFormat, GfxVendorInfo, GfxTextureDimension, GfxBindingLayoutDescriptor, GfxPrimitiveTopology, GfxMegaStateDescriptor, GfxCullMode, GfxFrontFaceMode, GfxAttachmentState, GfxChannelBlendState, GfxBlendFactor, GfxBlendMode, GfxCompareMode, GfxVertexBufferFrequency, GfxIndexBufferDescriptor, GfxProgramDescriptor, GfxProgramDescriptorSimple, GfxRenderTarget, GfxRenderTargetDescriptor, GfxClipSpaceNearZ, GfxTextureUsage, GfxViewportOrigin, GfxQueryPoolType, GfxBindingLayoutSamplerDescriptor, GfxSamplerFormatKind, GfxComputePipelineDescriptor, GfxComputePass, GfxComputeProgramDescriptor, GfxShadingLanguage } from "./GfxPlatform";
+import { _T, GfxResource, GfxReadback, GfxQueryPool, defaultBindingLayoutSamplerDescriptor, GfxComputePipeline } from "./GfxPlatformImpl";
 import { assertExists, assert, align, gfxBindingLayoutDescriptorEqual } from "./GfxPlatformUtil";
 import { FormatTypeFlags, getFormatTypeFlags, getFormatByteSize, getFormatSamplerKind, FormatFlags, getFormatFlags } from "./GfxPlatformFormat";
 import { HashMap, nullHashFunc } from "../../HashMap";
@@ -51,6 +51,11 @@ interface GfxProgramP_WebGPU extends GfxProgram {
     fragmentStage: GPUProgrammableStage | null;
 }
 
+interface GfxComputeProgramP_WebGPU extends GfxProgram {
+    descriptor: GfxComputeProgramDescriptor;
+    computeStage: GPUProgrammableStage | null;
+}
+
 interface BindGroupLayout {
     gpuBindGroupLayout: GPUBindGroupLayout[];
 }
@@ -78,24 +83,38 @@ interface GfxRenderPipelineP_WebGPU extends GfxRenderPipeline {
     isCreatingAsync: boolean;
 }
 
+interface GfxComputePipelineP_WebGPU extends GfxComputePipeline {
+    descriptor: GfxComputePipelineDescriptor;
+    gpuComputePipeline: GPUComputePipeline | null;
+    isCreatingAsync: boolean;
+}
+
 interface GfxReadbackP_WebGPU extends GfxReadback {
-    gpuResultBuffer: GPUBuffer;
+    cpuBuffer: GPUBuffer;
     done: boolean;
 }
 
 interface GfxQueryPoolP_WebGPU extends GfxQueryPool {
     querySet: GPUQuerySet;
+    resolveBuffer: GPUBuffer;
+    cpuBuffer: GPUBuffer;
+    results: BigUint64Array | null;
 }
 
-function translateBufferUsage(usage: GfxBufferUsage): GPUBufferUsageFlags {
-    if (usage === GfxBufferUsage.Index)
-        return GPUBufferUsage.INDEX;
-    else if (usage === GfxBufferUsage.Vertex)
-        return GPUBufferUsage.VERTEX;
-    else if (usage === GfxBufferUsage.Uniform)
-        return GPUBufferUsage.UNIFORM;
-    else
-        throw "whoops";
+function translateBufferUsage(usage_: GfxBufferUsage): GPUBufferUsageFlags {
+    let usage = 0;
+    if (usage_ & GfxBufferUsage.Index)
+        usage |= GPUBufferUsage.INDEX;
+    if (usage_ & GfxBufferUsage.Vertex)
+        usage |= GPUBufferUsage.VERTEX;
+    if (usage_ & GfxBufferUsage.Uniform)
+        usage |= GPUBufferUsage.UNIFORM;
+    if (usage_ & GfxBufferUsage.Storage)
+        usage |= GPUBufferUsage.STORAGE;
+    if (usage_ & GfxBufferUsage.CopySrc)
+        usage |= GPUBufferUsage.COPY_SRC;
+    usage |= GPUBufferUsage.COPY_DST;
+    return usage;
 }
 
 function translateWrapMode(wrapMode: GfxWrapMode): GPUAddressMode {
@@ -334,9 +353,15 @@ function translateColorState(attachmentState: GfxAttachmentState, format: GfxFor
     };
 }
 
-function translateTargets(colorAttachmentFormats: (GfxFormat | null)[], megaStateDescriptor: GfxMegaStateDescriptor): GPUColorTargetState[] {
-    return megaStateDescriptor.attachmentsState!.map((attachmentState, i) => {
-        return translateColorState(attachmentState, colorAttachmentFormats[i]!);
+function translateTargets(colorAttachmentFormats: (GfxFormat | null)[], megaStateDescriptor: GfxMegaStateDescriptor): (GPUColorTargetState | null)[] {
+    return colorAttachmentFormats.map((format, i) => {
+        if (format === null)
+            return null;
+
+        let attachmentState = megaStateDescriptor.attachmentsState[i];
+        if (attachmentState === undefined)
+            attachmentState = megaStateDescriptor.attachmentsState[0];
+        return translateColorState(attachmentState, format);
     });
 }
 
@@ -447,14 +472,26 @@ function translateBindGroupTextureBinding(sampler: GfxBindingLayoutSamplerDescri
     };
 }
 
+function translateBindGroupSamplerBinding(sampler: GfxBindingLayoutSamplerDescriptor): GPUSamplerBindingLayout {
+    if (sampler.formatKind === GfxSamplerFormatKind.Depth && sampler.comparison)
+        return { type: "comparison" };
+    else if (sampler.formatKind === GfxSamplerFormatKind.Float)
+        return { type: "filtering" };
+    else
+        return { type: "non-filtering" };
+}
+
 class GfxRenderPassP_WebGPU implements GfxRenderPass {
     public descriptor!: GfxRenderPassDescriptor;
+    public occlusionQueryPool: GfxQueryPoolP_WebGPU | null = null;
     private gpuRenderPassEncoder: GPURenderPassEncoder | null = null;
     private gpuRenderPassDescriptor: GPURenderPassDescriptor;
     private gpuColorAttachments: GPURenderPassColorAttachment[];
     private gpuDepthStencilAttachment: GPURenderPassDepthStencilAttachment;
     private gfxColorAttachment: (GfxTextureSharedP_WebGPU | null)[] = [];
+    private gfxColorAttachmentLevel: number[] = [];
     private gfxColorResolveTo: (GfxTextureSharedP_WebGPU | null)[] = [];
+    private gfxColorResolveToLevel: number[] = [];
     private gfxDepthStencilAttachment: GfxTextureSharedP_WebGPU | null = null;
     private gfxDepthStencilResolveTo: GfxTextureSharedP_WebGPU | null = null;
     private frameCommandEncoder: GPUCommandEncoder | null;
@@ -474,6 +511,14 @@ class GfxRenderPassP_WebGPU implements GfxRenderPass {
             colorAttachments: this.gpuColorAttachments,
             depthStencilAttachment: this.gpuDepthStencilAttachment,
         };
+    }
+
+    private getTextureView(target: GfxTextureSharedP_WebGPU, level: number): GPUTextureView {
+        assert(level < target.numLevels);
+        if (target.numLevels === 1)
+            return target.gpuTextureView;
+        else
+            return target.gpuTexture.createView({ baseMipLevel: level, mipLevelCount: 1 });
     }
 
     private setRenderPassDescriptor(descriptor: GfxRenderPassDescriptor): void {
@@ -497,12 +542,15 @@ class GfxRenderPassP_WebGPU implements GfxRenderPass {
             this.gfxColorAttachment[i] = colorAttachment;
             this.gfxColorResolveTo[i] = colorResolveTo;
 
+            this.gfxColorAttachmentLevel[i] = descriptor.colorAttachmentLevel[i];
+            this.gfxColorResolveToLevel[i] = descriptor.colorResolveToLevel[i];
+
             if (colorAttachment !== null) {
                 if (this.gpuColorAttachments[i] === undefined)
                     this.gpuColorAttachments[i] = {} as GPURenderPassColorAttachment;
 
                 const dstAttachment = this.gpuColorAttachments[i];
-                dstAttachment.view = colorAttachment.gpuTextureView;
+                dstAttachment.view = this.getTextureView(colorAttachment, this.gfxColorAttachmentLevel[i]);
                 const clearColor = descriptor.colorClearColor[i];
                 if (clearColor === 'load') {
                     dstAttachment.loadOp = 'load';
@@ -514,7 +562,7 @@ class GfxRenderPassP_WebGPU implements GfxRenderPass {
                 dstAttachment.resolveTarget = undefined;
                 if (colorResolveTo !== null) {
                     if (colorAttachment.sampleCount > 1)
-                        dstAttachment.resolveTarget = colorResolveTo.gpuTextureView;
+                        dstAttachment.resolveTarget = this.getTextureView(colorResolveTo, this.gfxColorResolveToLevel[i]);
                     else
                         dstAttachment.storeOp = 'store';
                 }
@@ -577,7 +625,12 @@ class GfxRenderPassP_WebGPU implements GfxRenderPass {
             this.gpuRenderPassDescriptor.depthStencilAttachment = undefined;
         }
 
-        this.gpuRenderPassDescriptor.occlusionQuerySet = descriptor.occlusionQueryPool !== null ? getPlatformQuerySet(descriptor.occlusionQueryPool) : undefined;
+        this.occlusionQueryPool = descriptor.occlusionQueryPool as GfxQueryPoolP_WebGPU;
+        if (this.occlusionQueryPool !== null) {
+            this.occlusionQueryPool.cpuBuffer.unmap();
+            this.occlusionQueryPool.results = null;
+        }
+        this.gpuRenderPassDescriptor.occlusionQuerySet = this.occlusionQueryPool !== null ? this.occlusionQueryPool.querySet : undefined;
     }
 
     public beginRenderPass(commandEncoder: GPUCommandEncoder, renderPassDescriptor: GfxRenderPassDescriptor): void {
@@ -646,7 +699,7 @@ class GfxRenderPassP_WebGPU implements GfxRenderPass {
         this.gpuRenderPassEncoder!.beginOcclusionQuery(dstOffs);
     }
 
-    public endOcclusionQuery(dstOffs: number): void {
+    public endOcclusionQuery(): void {
         this.gpuRenderPassEncoder!.endOcclusionQuery();
     }
 
@@ -666,12 +719,12 @@ class GfxRenderPassP_WebGPU implements GfxRenderPass {
         this.gpuRenderPassEncoder!.popDebugGroup();
     }
 
-    private copyAttachment(dst: GfxTextureSharedP_WebGPU, src: GfxTextureSharedP_WebGPU): void {
+    private copyAttachment(dst: GfxTextureSharedP_WebGPU, dstLevel: number, src: GfxTextureSharedP_WebGPU, srcLevel: number): void {
         assert(src.sampleCount === 1);
-        const srcCopy: GPUImageCopyTexture = { texture: src.gpuTexture };
-        const dstCopy: GPUImageCopyTexture = { texture: dst.gpuTexture };
-        assert(src.width === dst.width);
-        assert(src.height === dst.height);
+        const srcCopy: GPUImageCopyTexture = { texture: src.gpuTexture, mipLevel: srcLevel };
+        const dstCopy: GPUImageCopyTexture = { texture: dst.gpuTexture, mipLevel: dstLevel };
+        assert((src.width >>> srcLevel) === (dst.width >>> dstLevel));
+        assert((src.height >>> srcLevel) === (dst.height >>> dstLevel));
         assert(!!(src.usage & GPUTextureUsage.COPY_SRC));
         assert(!!(dst.usage & GPUTextureUsage.COPY_DST));
         this.frameCommandEncoder!.copyTextureToTexture(srcCopy, dstCopy, [dst.width, dst.height, 1]);
@@ -686,16 +739,72 @@ class GfxRenderPassP_WebGPU implements GfxRenderPass {
             const colorAttachment = this.gfxColorAttachment[i];
             const colorResolveTo = this.gfxColorResolveTo[i];
             if (colorAttachment !== null && colorResolveTo !== null && colorAttachment.sampleCount === 1)
-                this.copyAttachment(colorResolveTo, colorAttachment);
+                this.copyAttachment(colorResolveTo, this.gfxColorAttachmentLevel[i], colorAttachment, this.gfxColorResolveToLevel[i]);
         }
 
         if (this.gfxDepthStencilAttachment !== null && this.gfxDepthStencilResolveTo !== null) {
             if (this.gfxDepthStencilAttachment.sampleCount > 1) {
                 // TODO(jstpierre): MSAA depth resolve (requires shader)
             } else {
-                this.copyAttachment(this.gfxDepthStencilResolveTo, this.gfxDepthStencilAttachment);
+                this.copyAttachment(this.gfxDepthStencilResolveTo, 0, this.gfxDepthStencilAttachment, 0);
             }
         }
+
+        const queryPool = this.occlusionQueryPool;
+        if (queryPool !== null) {
+            this.frameCommandEncoder!.resolveQuerySet(queryPool.querySet, 0, queryPool.querySet.count, queryPool.resolveBuffer, 0);
+            this.frameCommandEncoder!.copyBufferToBuffer(queryPool.resolveBuffer, 0, queryPool.cpuBuffer, 0, 8 * queryPool.querySet.count);
+        }
+
+        this.frameCommandEncoder = null;
+    }
+}
+
+
+class GfxComputePassP_WebGPU implements GfxComputePass {
+    private gpuComputePassEncoder: GPUComputePassEncoder | null = null;
+    private frameCommandEncoder: GPUCommandEncoder | null;
+
+    public beginRenderPass(commandEncoder: GPUCommandEncoder): void {
+        assert(this.gpuComputePassEncoder === null);
+        this.frameCommandEncoder = commandEncoder;
+        this.gpuComputePassEncoder = this.frameCommandEncoder.beginComputePass();
+    }
+
+    public setPipeline(pipeline_: GfxComputePipeline): void {
+        const pipeline = pipeline_ as GfxComputePipelineP_WebGPU;
+        const gpuComputePipeline = assertExists(pipeline.gpuComputePipeline);
+        this.gpuComputePassEncoder!.setPipeline(gpuComputePipeline);
+    }
+
+    public setBindings(bindingLayoutIndex: number, bindings_: any, dynamicByteOffsets: number[]): void {
+        // TODO(jstpierre): Better bindings API
+        this.gpuComputePassEncoder!.setBindGroup(bindingLayoutIndex + 0, bindings_, dynamicByteOffsets);
+    }
+
+    public dispatch(x: number, y: number, z: number): void {
+        this.gpuComputePassEncoder!.dispatchWorkgroups(x, y, z);
+    }
+
+    public beginDebugGroup(name: string): void {
+        // FIREFOX MISSING
+        if (this.gpuComputePassEncoder!.pushDebugGroup === undefined)
+            return;
+
+        this.gpuComputePassEncoder!.pushDebugGroup(name);
+    }
+
+    public endDebugGroup(): void {
+        // FIREFOX MISSING
+        if (this.gpuComputePassEncoder!.popDebugGroup === undefined)
+            return;
+
+        this.gpuComputePassEncoder!.popDebugGroup();
+    }
+
+    public finish(): void {
+        this.gpuComputePassEncoder!.end();
+        this.gpuComputePassEncoder = null;
 
         this.frameCommandEncoder = null;
     }
@@ -766,61 +875,6 @@ function translateImageLayout(size: GPUExtent3DDictStrict, layout: GPUImageDataL
     layout.rowsPerImage = numBlocksY;
 }
 
-const fullscreenVS = `
-struct VertexOutput {
-    @builtin(position) pos: vec4<f32>,
-};
-
-@stage(vertex)
-fn vs(@builtin(vertex_index) index: u32) -> VertexOutput {
-    var out: VertexOutput;
-    out.pos.x = select(-1.0, 3.0, index == 1u);
-    out.pos.y = select(-1.0, 3.0, index == 2u);
-    out.pos.z = 1.0;
-    out.pos.w = 1.0;
-    return out;
-}
-`;
-
-// Hack for now until browsers implement compositingAlphaMode
-// https://bugs.chromium.org/p/chromium/issues/detail?id=1241373
-class FullscreenAlphaClear {
-    private shaderModule: GPUShaderModule;
-    private pipeline: GPURenderPipeline;
-
-    private shaderText = `
-${fullscreenVS}
-
-struct FragmentOutput { @location(0) color: vec4<f32>, };
-
-@stage(fragment)
-fn fs() -> FragmentOutput {
-    return FragmentOutput(vec4<f32>(1.0, 0.0, 1.0, 1.0));
-}
-`;
-
-    constructor(device: GPUDevice, format: GPUTextureFormat) {
-        this.shaderModule = device.createShaderModule({ code: this.shaderText });
-        this.pipeline = device.createRenderPipeline({
-            layout: 'auto',
-            vertex: { module: this.shaderModule, entryPoint: 'vs', },
-            fragment: { module: this.shaderModule, entryPoint: 'fs', targets: [{ format, writeMask: 0x08, }] },
-        });
-    }
-
-    public render(encoder: GPUCommandEncoder, onscreenTexture: GPUTextureView): void {
-        const renderPass = encoder.beginRenderPass({
-            colorAttachments: [{ view: onscreenTexture, loadOp: 'load', storeOp: 'store', }],
-        });
-        renderPass.setPipeline(this.pipeline);
-        renderPass.draw(3);
-        renderPass.end();
-    }
-
-    public destroy(device: GPUDevice): void {
-    }
-}
-
 class GfxImplP_WebGPU implements GfxSwapChain, GfxDevice {
     private _swapChainWidth = 0;
     private _swapChainHeight = 0;
@@ -834,16 +888,18 @@ class GfxImplP_WebGPU implements GfxSwapChain, GfxDevice {
     private _fallbackTexture2DArray: GfxTextureP_WebGPU;
     private _fallbackTexture3D: GfxTextureP_WebGPU;
     private _fallbackTextureCube: GfxTextureP_WebGPU;
-    private _fallbackSampler: GfxSampler;
+    private _fallbackSamplerFiltering: GfxSampler;
+    private _fallbackSamplerComparison: GfxSampler;
 
     private _renderPassPool: GfxRenderPassP_WebGPU[] = [];
+    private _computePassPool: GfxComputePassP_WebGPU[] = [];
     private _featureTextureCompressionBC: boolean = false;
 
     private _bindGroupLayoutCache = new HashMap<GfxBindingLayoutDescriptor, BindGroupLayout>(gfxBindingLayoutDescriptorEqual, nullHashFunc);
 
-    private _fullscreenAlphaClear: FullscreenAlphaClear;
     private _frameCommandEncoder: GPUCommandEncoder | null = null;
     private _readbacksSubmitted: GfxReadbackP_WebGPU[] = [];
+    private _queryPoolsSubmitted: GfxQueryPoolP_WebGPU[] = [];
 
     // GfxVendorInfo
     public readonly platformString: string = 'WebGPU';
@@ -858,20 +914,31 @@ class GfxImplP_WebGPU implements GfxSwapChain, GfxDevice {
         'texture-compression-bc',
     ];
 
-    constructor(private adapter: GPUAdapter, private device: GPUDevice, private canvas: HTMLCanvasElement | OffscreenCanvas, private canvasContext: GPUCanvasContext, private glsl_compile: typeof glsl_compile_) {
+    constructor(public adapter: GPUAdapter, public device: GPUDevice, private canvas: HTMLCanvasElement | OffscreenCanvas, private canvasContext: GPUCanvasContext, private glsl_compile: typeof glsl_compile_) {
         this._fallbackTexture2D = this.createFallbackTexture(GfxTextureDimension.n2D, GfxSamplerFormatKind.Float);
         this._fallbackTexture2DDepth = this.createFallbackTexture(GfxTextureDimension.n2D, GfxSamplerFormatKind.Depth);
         this._fallbackTexture2DArray = this.createFallbackTexture(GfxTextureDimension.n2DArray, GfxSamplerFormatKind.Float);
         this._fallbackTexture3D = this.createFallbackTexture(GfxTextureDimension.n3D, GfxSamplerFormatKind.Float);
         this._fallbackTextureCube = this.createFallbackTexture(GfxTextureDimension.Cube, GfxSamplerFormatKind.Float);
 
-        this._fallbackSampler = this.createSampler({
+        this._fallbackSamplerFiltering = this.createSampler({
             wrapS: GfxWrapMode.Repeat,
             wrapT: GfxWrapMode.Repeat,
             minFilter: GfxTexFilterMode.Point,
             magFilter: GfxTexFilterMode.Point,
-            mipFilter: GfxMipFilterMode.NoMip,
+            mipFilter: GfxMipFilterMode.Nearest,
         });
+        this.setResourceName(this._fallbackSamplerFiltering, 'Fallback Sampler Filtering');
+
+        this._fallbackSamplerComparison = this.createSampler({
+            wrapS: GfxWrapMode.Repeat,
+            wrapT: GfxWrapMode.Repeat,
+            minFilter: GfxTexFilterMode.Point,
+            magFilter: GfxTexFilterMode.Point,
+            mipFilter: GfxMipFilterMode.Nearest,
+            compareMode: GfxCompareMode.Always,
+        });
+        this.setResourceName(this._fallbackSamplerFiltering, 'Fallback Sampler Comparison');
 
         // FIREFOX MISSING
         if (this.device.features)
@@ -883,9 +950,8 @@ class GfxImplP_WebGPU implements GfxSwapChain, GfxDevice {
         };
 
         this._swapChainFormat = navigator.gpu.getPreferredCanvasFormat();
-        this._fullscreenAlphaClear = new FullscreenAlphaClear(this.device, this._swapChainFormat);
 
-        this.canvasContext.configure({ device: this.device, format: this._swapChainFormat, usage: this._swapChainTextureUsage, compositingAlphaMode: 'opaque' });
+        this.canvasContext.configure({ device: this.device, format: this._swapChainFormat, usage: this._swapChainTextureUsage, alphaMode: 'opaque' });
     }
 
     private createFallbackTexture(dimension: GfxTextureDimension, formatKind: GfxSamplerFormatKind): GfxTextureP_WebGPU {
@@ -937,7 +1003,6 @@ class GfxImplP_WebGPU implements GfxSwapChain, GfxDevice {
 
     public createBuffer(wordCount: number, usage_: GfxBufferUsage, hint: GfxBufferFrequencyHint): GfxBuffer {
         let usage = translateBufferUsage(usage_);
-        usage |= GPUBufferUsage.COPY_DST;
         const size = wordCount * 4;
         const gpuBuffer = this.device.createBuffer({ usage, size });
         const buffer: GfxBufferP_WebGPU = { _T: _T.Buffer, ResourceUniqueId: this.getNextUniqueId(), gpuBuffer, size };
@@ -998,13 +1063,13 @@ class GfxImplP_WebGPU implements GfxSwapChain, GfxDevice {
         const gpuSampler = this.device.createSampler({
             addressModeU: translateWrapMode(descriptor.wrapS),
             addressModeV: translateWrapMode(descriptor.wrapT),
-            // TODO(jstpierre): Expose this as a sampler parameter.
             addressModeW: translateWrapMode(descriptor.wrapQ ?? descriptor.wrapS),
             lodMinClamp,
             lodMaxClamp,
             minFilter: translateMinMagFilter(descriptor.minFilter),
             magFilter: translateMinMagFilter(descriptor.magFilter),
             mipmapFilter: translateMipFilter(descriptor.mipFilter),
+            compare: descriptor.compareMode !== undefined ? translateCompareMode(descriptor.compareMode) : undefined,
             maxAnisotropy,
         });
 
@@ -1038,7 +1103,7 @@ class GfxImplP_WebGPU implements GfxSwapChain, GfxDevice {
         return attachment;
     }
 
-    private _createShaderStage(sourceText: string, shaderStage: 'vertex' | 'fragment'): GPUProgrammableStage {
+    private _createShaderStageGLSL(sourceText: string, shaderStage: 'vertex' | 'fragment' | 'compute'): GPUProgrammableStage {
         const validationEnabled = false;
 
         let code: string;
@@ -1059,24 +1124,35 @@ class GfxImplP_WebGPU implements GfxSwapChain, GfxDevice {
             });
         }
 
-        // Workaround for https://bugs.chromium.org/p/tint/issues/detail?id=1503
-        code = code.replace('@vertex', '@stage(vertex)');
-        code = code.replace('@fragment', '@stage(fragment)');
+        // Workaround for unreported Naga bug
+        code = code.replace('<i32> = textureDimensions(', '<u32> = textureDimensions(');
 
         const shaderModule = this.device.createShaderModule({ code });
         return { module: shaderModule, entryPoint: 'main' };
     }
 
+    private _createShaderStage(sourceText: string, shaderStage: 'vertex' | 'fragment' | 'compute', shadingLanguage: GfxShadingLanguage): GPUProgrammableStage {
+        if (shadingLanguage === GfxShadingLanguage.GLSL) {
+            return this._createShaderStageGLSL(sourceText, shaderStage);
+        } else {
+            // by convention, entry point is named main
+            const code = sourceText;
+            const shaderModule = this.device.createShaderModule({ code });
+            return { module: shaderModule, entryPoint: 'main' };
+        }
+    }
+
     public createProgramSimple(descriptor: GfxProgramDescriptorSimple): GfxProgram {
-        const vertexStage = this._createShaderStage(descriptor.preprocessedVert, 'vertex');
-        const fragmentStage = descriptor.preprocessedFrag !== null ? this._createShaderStage(descriptor.preprocessedFrag, 'fragment') : null;
+        const vertexStage = this._createShaderStageGLSL(descriptor.preprocessedVert, 'vertex');
+        const fragmentStage = descriptor.preprocessedFrag !== null ? this._createShaderStageGLSL(descriptor.preprocessedFrag, 'fragment') : null;
         const program: GfxProgramP_WebGPU = { _T: _T.Program, ResourceUniqueId: this.getNextUniqueId(), descriptor, vertexStage, fragmentStage, };
         return program;
     }
 
-    public createProgram(descriptor: GfxProgramDescriptor): GfxProgram {
-        descriptor.ensurePreprocessed(this);
-        return this.createProgramSimple(descriptor);
+    public createComputeProgram(descriptor: GfxComputeProgramDescriptor): GfxProgram {
+        const computeStage = this._createShaderStage(descriptor.preprocessedComp, 'compute', descriptor.shadingLanguage);
+        const program: GfxComputeProgramP_WebGPU = { _T: _T.Program, ResourceUniqueId: this.getNextUniqueId(), descriptor, computeStage, };
+        return program;
     }
 
     private _createBindGroupLayoutInternal(bindingLayout: GfxBindingLayoutDescriptor): BindGroupLayout {
@@ -1088,7 +1164,7 @@ class GfxImplP_WebGPU implements GfxSwapChain, GfxDevice {
         for (let i = 0; i < bindingLayout.numSamplers; i++) {
             const samplerEntry = bindingLayout.samplerEntries !== undefined ? bindingLayout.samplerEntries[i] : defaultBindingLayoutSamplerDescriptor;
             entries[1].push({ binding: entries[1].length, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, texture: translateBindGroupTextureBinding(samplerEntry), });
-            entries[1].push({ binding: entries[1].length, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } });
+            entries[1].push({ binding: entries[1].length, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, sampler: translateBindGroupSamplerBinding(samplerEntry), });
         }
 
         const gpuBindGroupLayout = entries.map((entries) => this.device.createBindGroupLayout({ entries }));
@@ -1107,7 +1183,7 @@ class GfxImplP_WebGPU implements GfxSwapChain, GfxDevice {
     private _getFallbackTexture(samplerEntry: GfxBindingLayoutSamplerDescriptor): GfxTexture {
         const dimension = samplerEntry.dimension, formatKind = samplerEntry.formatKind;
         if (dimension === GfxTextureDimension.n2D)
-            return formatKind === GfxSamplerFormatKind.Depth ? this._fallbackTexture2DDepth : this._fallbackTexture2D;
+            return (formatKind === GfxSamplerFormatKind.Depth) ? this._fallbackTexture2DDepth : this._fallbackTexture2D;
         else if (dimension === GfxTextureDimension.n2DArray)
             return this._fallbackTexture2DArray;
         else if (dimension === GfxTextureDimension.n3D)
@@ -1116,6 +1192,14 @@ class GfxImplP_WebGPU implements GfxSwapChain, GfxDevice {
             return this._fallbackTextureCube;
         else
             throw "whoops";
+    }
+
+    private _getFallbackSampler(samplerEntry: GfxBindingLayoutSamplerDescriptor): GfxSampler {
+        const formatKind = samplerEntry.formatKind;
+        if (formatKind === GfxSamplerFormatKind.Depth && samplerEntry.comparison)
+            return this._fallbackSamplerComparison;
+        else
+            return this._fallbackSamplerFiltering;
     }
 
     public createBindings(bindingsDescriptor: GfxBindingsDescriptor): GfxBindings {
@@ -1140,13 +1224,13 @@ class GfxImplP_WebGPU implements GfxSwapChain, GfxDevice {
             const samplerEntry = bindingLayout.samplerEntries !== undefined ? bindingLayout.samplerEntries[i] : defaultBindingLayoutSamplerDescriptor;
 
             const gfxBinding = bindingsDescriptor.samplerBindings[i];
-            const gfxTexture = gfxBinding.gfxTexture !== null ? gfxBinding.gfxTexture : this._getFallbackTexture(samplerEntry);
-            assert(samplerEntry.dimension === (gfxTexture as GfxTextureP_WebGPU).dimension);
-            assert(samplerEntry.formatKind === getFormatSamplerKind((gfxTexture as GfxTextureP_WebGPU).pixelFormat));
+            const gfxTexture = (gfxBinding.gfxTexture !== null ? gfxBinding.gfxTexture : this._getFallbackTexture(samplerEntry)) as GfxTextureP_WebGPU;
+            assert(samplerEntry.dimension === gfxTexture.dimension);
+            assert(samplerEntry.formatKind === getFormatSamplerKind(gfxTexture.pixelFormat));
             const gpuTextureView = (gfxTexture as GfxTextureP_WebGPU).gpuTextureView;
             gpuBindGroupEntries[1].push({ binding: numBindings++, resource: gpuTextureView });
 
-            const gfxSampler = gfxBinding.gfxSampler !== null ? gfxBinding.gfxSampler : this._fallbackSampler;
+            const gfxSampler = gfxBinding.gfxSampler !== null ? gfxBinding.gfxSampler : this._getFallbackSampler(samplerEntry);
             const gpuSampler = getPlatformSampler(gfxSampler);
             gpuBindGroupEntries[1].push({ binding: numBindings++, resource: gpuSampler });
         }
@@ -1279,10 +1363,63 @@ class GfxImplP_WebGPU implements GfxSwapChain, GfxDevice {
         renderPipeline.isCreatingAsync = false;
     }
 
+    public createComputePipeline(descriptor: GfxComputePipelineDescriptor): GfxComputePipeline {
+        const gpuComputePipeline: GPUComputePipeline | null = null;
+        const isCreatingAsync = false;
+        const computePipeline: GfxComputePipelineP_WebGPU = {
+            _T: _T.ComputePipeline, ResourceUniqueId: this.getNextUniqueId(),
+            descriptor, isCreatingAsync, gpuComputePipeline,
+        };
+        this._createComputePipeline(computePipeline, true);
+        return computePipeline;
+    }
+
+    private async _createComputePipeline(computePipeline: GfxComputePipelineP_WebGPU, async: boolean): Promise<void> {
+        // FIREFOX MISSING
+        if (this.device.createRenderPipelineAsync === undefined)
+            async = false;
+
+        // If we're already in the process of creating a the pipeline async, no need to kick the process off again...
+        if (async && computePipeline.isCreatingAsync)
+            return;
+
+        if (computePipeline.gpuComputePipeline !== null)
+            return;
+
+        const descriptor = computePipeline.descriptor;
+        const program = descriptor.program as GfxComputeProgramP_WebGPU;
+        
+        const layout = descriptor.pipelineLayout as GPUPipelineLayout;
+        const compute = program.computeStage!;
+
+        computePipeline.isCreatingAsync = true;
+
+        const gpuComputePipelineDescriptor: GPUComputePipelineDescriptor = {
+            layout,
+            compute,
+        };
+
+        if (async) {
+            const gpuComputePipeline = await this.device.createComputePipelineAsync(gpuComputePipelineDescriptor);
+
+            // We might have created a sync pipeline while we were async building; no way to cancel the async
+            // pipeline build at this point, so just chuck it out :/
+            if (computePipeline.gpuComputePipeline === null)
+                computePipeline.gpuComputePipeline = gpuComputePipeline;
+        } else {
+            computePipeline.gpuComputePipeline = this.device.createComputePipeline(gpuComputePipelineDescriptor);
+        }
+
+        if (computePipeline.ResourceName !== undefined)
+            computePipeline.gpuComputePipeline.label = computePipeline.ResourceName;
+
+        computePipeline.isCreatingAsync = false;
+    }
+
     public createReadback(byteCount: number): GfxReadback {
         const o: GfxReadbackP_WebGPU = {
             _T: _T.Readback, ResourceUniqueId: this.getNextUniqueId(),
-            gpuResultBuffer: this.device.createBuffer({ size: byteCount, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }),
+            cpuBuffer: this.device.createBuffer({ size: byteCount, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }),
             done: false,
         };
         return o;
@@ -1296,6 +1433,9 @@ class GfxImplP_WebGPU implements GfxSwapChain, GfxDevice {
         const o: GfxQueryPoolP_WebGPU = {
             _T: _T.QueryPool, ResourceUniqueId: this.getNextUniqueId(),
             querySet,
+            resolveBuffer: this.device.createBuffer({ size: elemCount * 8, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC }),
+            cpuBuffer: this.device.createBuffer({ size: elemCount * 8, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }),
+            results: null,
         };
         return o;
     }
@@ -1338,13 +1478,19 @@ class GfxImplP_WebGPU implements GfxSwapChain, GfxDevice {
     public destroyRenderPipeline(o: GfxRenderPipeline): void {
     }
 
+    public destroyComputePipeline(o: GfxComputePipeline): void {
+    }
+
     public destroyReadback(o: GfxReadback): void {
         const readback = o as GfxReadbackP_WebGPU;
-        readback.gpuResultBuffer.destroy();
+        readback.cpuBuffer.destroy();
     }
 
     public destroyQueryPool(o: GfxQueryPool): void {
-        getPlatformQuerySet(o).destroy();
+        const queryPool = o as GfxQueryPoolP_WebGPU;
+        queryPool.querySet.destroy();
+        queryPool.resolveBuffer.destroy();
+        queryPool.cpuBuffer.destroy();
     }
 
     public pipelineQueryReady(o: GfxRenderPipeline): boolean {
@@ -1365,11 +1511,26 @@ class GfxImplP_WebGPU implements GfxSwapChain, GfxDevice {
         return pass;
     }
 
+    public createComputePass(): GfxComputePass {
+        let pass = this._computePassPool.pop();
+        if (pass === undefined)
+            pass = new GfxComputePassP_WebGPU();
+        pass.beginRenderPass(this._frameCommandEncoder!);
+        return pass;
+    }
+
     public submitPass(o: GfxPass): void {
         if (o instanceof GfxRenderPassP_WebGPU) {
             const pass = o as GfxRenderPassP_WebGPU;
             pass.finish();
             this._renderPassPool.push(pass);
+
+            if (pass.occlusionQueryPool !== null)
+                this._queryPoolsSubmitted.push(pass.occlusionQueryPool);
+        } else if (o instanceof GfxComputePassP_WebGPU) {
+            const pass = o as GfxComputePassP_WebGPU;
+            pass.finish();
+            this._computePassPool.push(pass);
         }
     }
 
@@ -1381,18 +1542,26 @@ class GfxImplP_WebGPU implements GfxSwapChain, GfxDevice {
     public endFrame(): void {
         assert(this._frameCommandEncoder !== null);
 
-        this._fullscreenAlphaClear.render(this._frameCommandEncoder, this.canvasContext.getCurrentTexture().createView());
         this.device.queue.submit([this._frameCommandEncoder.finish()]);
         this._frameCommandEncoder = null;
 
         // Do any post-command-submit scheduling work
+
         for (let i = 0; i < this._readbacksSubmitted.length; i++) {
             const readback = this._readbacksSubmitted[i];
-            readback.gpuResultBuffer.mapAsync(GPUMapMode.READ).then(() => {
+            readback.cpuBuffer.mapAsync(GPUMapMode.READ).then(() => {
                 readback.done = true;
             });
         }
         this._readbacksSubmitted.length = 0;
+
+        for (let i = 0; i < this._queryPoolsSubmitted.length; i++) {
+            const queryPool = this._queryPoolsSubmitted[i];
+            queryPool.cpuBuffer.mapAsync(GPUMapMode.READ).then(() => {
+                queryPool.results = new BigUint64Array(queryPool.cpuBuffer.getMappedRange());
+            });
+        }
+        this._queryPoolsSubmitted.length = 0;
     }
 
     public copySubTexture2D(dst_: GfxTexture, dstX: number, dstY: number, src_: GfxTexture, srcX: number, srcY: number): void {
@@ -1443,12 +1612,18 @@ class GfxImplP_WebGPU implements GfxSwapChain, GfxDevice {
         }
     }
 
+    public readBuffer(o: GfxReadback, dstOffset: number, buffer_: GfxBuffer, srcOffset: number, byteSize: number): void {
+        const readback = o as GfxReadbackP_WebGPU;
+        const buffer = buffer_ as GfxBufferP_WebGPU;
+        this._frameCommandEncoder!.copyBufferToBuffer(buffer.gpuBuffer, srcOffset, readback.cpuBuffer, dstOffset, byteSize);
+    }
+
     public readPixelFromTexture(o: GfxReadback, dstOffset: number, texture_: GfxTexture, x: number, y: number): void {
         const readback = o as GfxReadbackP_WebGPU;
-        const texture = (texture_ as GfxTextureP_WebGPU);
+        const texture = texture_ as GfxTextureP_WebGPU;
         const formatByteSize = getFormatByteSize(texture.pixelFormat);
         const copySrc: GPUImageCopyTexture = { texture: texture.gpuTexture, origin: [x, y, 0] };
-        const copyDst: GPUImageCopyBuffer = { buffer: readback.gpuResultBuffer, offset: dstOffset * formatByteSize };
+        const copyDst: GPUImageCopyBuffer = { buffer: readback.cpuBuffer, offset: dstOffset * formatByteSize };
         this._frameCommandEncoder!.copyTextureToBuffer(copySrc, copyDst, [1, 1, 1]);
     }
 
@@ -1461,11 +1636,11 @@ class GfxImplP_WebGPU implements GfxSwapChain, GfxDevice {
     public queryReadbackFinished(dst: Uint32Array, dstOffs: number, o: GfxReadback): boolean {
         const readback = o as GfxReadbackP_WebGPU;
         if (readback.done) {
-            const src = new Uint32Array(readback.gpuResultBuffer.getMappedRange());
+            const src = new Uint32Array(readback.cpuBuffer.getMappedRange());
             dst.set(src, dstOffs);
 
             // Reset the readback object.
-            readback.gpuResultBuffer.unmap();
+            readback.cpuBuffer.unmap();
             readback.done = false;
 
             return true;
@@ -1475,16 +1650,20 @@ class GfxImplP_WebGPU implements GfxSwapChain, GfxDevice {
     }
 
     public queryPoolResultOcclusion(o: GfxQueryPool, dstOffs: number): boolean | null {
-        return true;
+        const queryPool = o as GfxQueryPoolP_WebGPU;
+        if (queryPool.results === null)
+            return null;
+        return queryPool.results[dstOffs] !== BigInt(0);
     }
 
     public queryLimits(): GfxDeviceLimits {
         // TODO(jstpierre): GPULimits
         return {
-            uniformBufferMaxPageWordSize: 0x1000,
-            uniformBufferWordAlignment: 0x40,
+            uniformBufferMaxPageWordSize: 0x10000,
+            uniformBufferWordAlignment: this.device.limits.minUniformBufferOffsetAlignment * 4,
             supportedSampleCounts: [1],
-            occlusionQueriesRecommended: false,
+            occlusionQueriesRecommended: true,
+            computeShadersSupported: true,
         };
     }
 
@@ -1547,6 +1726,11 @@ class GfxImplP_WebGPU implements GfxSwapChain, GfxDevice {
             const r = o as GfxRenderPipelineP_WebGPU;
             if (r.gpuRenderPipeline !== null)
                 r.gpuRenderPipeline.label = s;
+        } else if (o._T === _T.QueryPool) {
+            const r = o as GfxQueryPoolP_WebGPU;
+            r.querySet.label = `${s} QuerySet`;
+            r.resolveBuffer.label = `${s} Resolve Buffer`;
+            r.cpuBuffer.label = `${s} CPU Buffer`;
         }
     }
 
@@ -1587,4 +1771,8 @@ export async function createSwapChainForWebGPU(canvas: HTMLCanvasElement | Offsc
 
     const { glsl_compile } = await import('../../../rust/pkg/index');
     return new GfxImplP_WebGPU(adapter, device, canvas, context, glsl_compile);
+}
+
+export function gfxDeviceGetImpl_WebGPU(gfxDevice: GfxDevice): GfxImplP_WebGPU {
+    return gfxDevice as GfxImplP_WebGPU;
 }

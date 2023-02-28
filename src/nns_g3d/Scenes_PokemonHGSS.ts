@@ -1,5 +1,5 @@
 
-// Pokemon Heart Gold Soul Silver
+// Pokemon HeartGold SoulSilver
 
 import * as Viewer from '../viewer';
 import * as NARC from './narc';
@@ -70,10 +70,12 @@ class PokemonHGSSSceneDesc implements Viewer.SceneDesc {
         modelCache.fetchNARC(`bm_room.narc`, 'bm_room');
         await modelCache.waitForLoad();
 
+        const renderer = new PlatinumMapRenderer(device);
+        const cache = renderer.getCache();
+
         //Spacecats: TODO - General cleaning and organization. Fix issues with a few map chunks.
 
         const tilesets = new Map<number, BTX0>();
-        const renderers: MDL0Renderer[] = [];
         const map_matrix_headers: number[][] = []
         const map_matrix_height: number[][] = [];
         const map_matrix_files: number[][] = [];
@@ -157,9 +159,9 @@ class PokemonHGSSSceneDesc implements Viewer.SceneDesc {
                 let mapRenderer: MDL0Renderer | null = null;
 
                 if (mapRenderer === null && tilesets.has(tilesetIndex))
-                    mapRenderer = tryMDL0(device, embeddedModelBMD.models[0], assertExists(tilesets.get(tilesetIndex)!.tex0));
+                    mapRenderer = tryMDL0(device, cache, embeddedModelBMD.models[0], assertExists(tilesets.get(tilesetIndex)!.tex0));
                 if (mapRenderer === null)
-                    mapRenderer = tryMDL0(device, embeddedModelBMD.models[0], assertExists(tilesets.get(mapFallbackTileset)!.tex0));
+                    mapRenderer = tryMDL0(device, cache, embeddedModelBMD.models[0], assertExists(tilesets.get(mapFallbackTileset)!.tex0));
                 if (mapRenderer === null)
                     continue;
 
@@ -168,7 +170,7 @@ class PokemonHGSSSceneDesc implements Viewer.SceneDesc {
                 const bbox = new AABB(-256, -256, -256, 256, 256, 256);
                 bbox.transform(bbox, mapRenderer.modelMatrix);
                 mapRenderer.bbox = bbox;
-                renderers.push(mapRenderer);
+                renderer.objectRenderers.push(mapRenderer);
 
                 const objectCount = (modelOffset - objectOffset) / 0x30;
                 for (let objIndex = 0; objIndex <  objectCount; objIndex++) {
@@ -189,28 +191,27 @@ class PokemonHGSSSceneDesc implements Viewer.SceneDesc {
                     }
 
                     const objBmd = parseNSBMD(modelFile);
-                    let renderer: MDL0Renderer | null = null;
-                    if(renderer === null)
-                        renderer = tryMDL0(device, objBmd.models[0], assertExists(tilesets.get(mapFallbackTileset)!.tex0));
-                    if (renderer === null)
-                        renderer = tryMDL0(device, objBmd.models[0], assertExists(objBmd.tex0));
-                    if (renderer === null)
+                    let obj: MDL0Renderer | null = null;
+                    if(obj === null)
+                        obj = tryMDL0(device, cache, objBmd.models[0], assertExists(tilesets.get(mapFallbackTileset)!.tex0));
+                    if (obj === null)
+                        obj = tryMDL0(device, cache, objBmd.models[0], assertExists(objBmd.tex0));
+                    if (obj === null)
                         continue;
 
-                    renderer.bbox = bbox;
-                    mat4.translate(renderer.modelMatrix, renderer.modelMatrix, [(posX + (x * 512)), posY, (posZ + (y * 512))]);
-                    renderers.push(renderer);
+                    obj.bbox = bbox;
+                    mat4.translate(obj.modelMatrix, obj.modelMatrix, [(posX + (x * 512)), posY, (posZ + (y * 512))]);
+                    renderer.objectRenderers.push(obj);
                 }
             }
         }
 
-        return new PlatinumMapRenderer(device, renderers);
+        return renderer;
     }
-    
 }
 
 const id = 'pkmnsslvr';
-const name = 'Pokemon Heart Gold Soul Silver';
+const name = 'Pokémon HeartGold & SoulSilver';
 const sceneDescs = [
     new PokemonHGSSSceneDesc("0", "Johto & Kanto Region", false),
     new PokemonHGSSSceneDesc("69", "Pokemon Center"),
@@ -218,12 +219,12 @@ const sceneDescs = [
     new PokemonHGSSSceneDesc("369", "Pokemon Center Basement (Dupe?)"),
     new PokemonHGSSSceneDesc("367", "Pokemon Center Basement (Dupe?)"),
     new PokemonHGSSSceneDesc("368", "Pokemon Center Basement (Dupe?)"),
-    new PokemonHGSSSceneDesc("68", "Pokemart"),
-    new PokemonHGSSSceneDesc("360", "Pokemart (Dupe?)"),
+    new PokemonHGSSSceneDesc("68", "Poke Mart"),
+    new PokemonHGSSSceneDesc("360", "Poke Mart (Dupe?)"),
     new PokemonHGSSSceneDesc("2", "Union Room"),
     new PokemonHGSSSceneDesc("5", "Battle Room", false),
     new PokemonHGSSSceneDesc("62", "New Bark House 1"),
-    new PokemonHGSSSceneDesc("6", "Burned Tower Exterior", false),
+    new PokemonHGSSSceneDesc("6", "Bellchime Trail", false),
     new PokemonHGSSSceneDesc("7", "Burned Tower Floor 1", false),
     new PokemonHGSSSceneDesc("411", "Frontier Access", false),
     new PokemonHGSSSceneDesc("272", "Battle Frontier Hub", false),
@@ -232,7 +233,7 @@ const sceneDescs = [
     new PokemonHGSSSceneDesc("275", "Battle Frontier Battle Factory"),
     new PokemonHGSSSceneDesc("276", "Battle Frontier Battle Hall"),
     new PokemonHGSSSceneDesc("277", "Battle Frontier Battle Castle"),
-    new PokemonHGSSSceneDesc("278", "Battle Frontier Battle Arcade"), // Room is suppose to be dark
+    new PokemonHGSSSceneDesc("278", "Battle Frontier Battle Arcade"), // Room is supposed to be dark
     new PokemonHGSSSceneDesc("279", "Cliff Edge Gate", false),
     new PokemonHGSSSceneDesc("280", "Pokeathlon Dome", false),
     new PokemonHGSSSceneDesc("281", "Pokeathlon Dome Interior"),
@@ -248,63 +249,63 @@ const sceneDescs = [
     new PokemonHGSSSceneDesc("302", "Elite Four Poison Room"),
     new PokemonHGSSSceneDesc("303", "Elite Four Fighting Room"),
     new PokemonHGSSSceneDesc("304", "Elite Four Dark Room"),
-    new PokemonHGSSSceneDesc("305", "Champions Room"),
+    new PokemonHGSSSceneDesc("305", "Champion's Room"),
     new PokemonHGSSSceneDesc("318", "Ruins of Alph"),
-    new PokemonHGSSSceneDesc("307", "Boat F1"),
+    new PokemonHGSSSceneDesc("307", "Boat 1F"),
     new PokemonHGSSSceneDesc("328", "Boat Rooms Set 1"),
     new PokemonHGSSSceneDesc("309", "Boat Rooms Set 2"),
     new PokemonHGSSSceneDesc("310", "Boat Rooms Set 3"),
     new PokemonHGSSSceneDesc("311", "Boat Rooms Set 4"),
-    new PokemonHGSSSceneDesc("329", "Boat B1"),
+    new PokemonHGSSSceneDesc("329", "Boat B1F"),
     new PokemonHGSSSceneDesc("330", "Boat Exterior", false),
     new PokemonHGSSSceneDesc("331", "Day Care Interior"),
-    new PokemonHGSSSceneDesc("332", "Bellsprout Tower F1", false),
-    new PokemonHGSSSceneDesc("333", "Bellsprout Tower F2", false),
-    new PokemonHGSSSceneDesc("334", "Bellsprout Tower F3", false),
-    new PokemonHGSSSceneDesc("335", "Bellsprout Tower F4", false),
-    new PokemonHGSSSceneDesc("336", "Bellsprout Tower F5", false),
-    new PokemonHGSSSceneDesc("337", "Bellsprout Tower F6", false),
-    new PokemonHGSSSceneDesc("338", "Bellsprout Tower F7", false),
-    new PokemonHGSSSceneDesc("339", "Bellsprout Tower F8", false),
-    new PokemonHGSSSceneDesc("341", "Bellsprout Tower F9", false),
-    new PokemonHGSSSceneDesc("340", "Bellsprout Tower Roof", false),
-    new PokemonHGSSSceneDesc("342", "???", false),
-    new PokemonHGSSSceneDesc("343", "Safari Zone Area", false),
-    new PokemonHGSSSceneDesc("344", "Safari Zone Area", false),
-    new PokemonHGSSSceneDesc("345", "Safari Zone Area", false),
-    new PokemonHGSSSceneDesc("346", "Safari Zone Area", false),
-    new PokemonHGSSSceneDesc("347", "Safari Zone Area", false),
-    new PokemonHGSSSceneDesc("348", "Safari Zone Area", false),
-    new PokemonHGSSSceneDesc("349", "Safari Zone Area", false),
-    new PokemonHGSSSceneDesc("350", "Safari Zone Area", false),
-    new PokemonHGSSSceneDesc("351", "Safari Zone Area", false),
-    new PokemonHGSSSceneDesc("352", "Safari Zone Area", false),
-    new PokemonHGSSSceneDesc("353", "Safari Zone Area", false),
-    new PokemonHGSSSceneDesc("354", "Safari Zone Area", false),
+    new PokemonHGSSSceneDesc("332", "Bell Tower 1F", false),
+    new PokemonHGSSSceneDesc("333", "Bell Tower 2F", false),
+    new PokemonHGSSSceneDesc("334", "Bell Tower 3F", false),
+    new PokemonHGSSSceneDesc("335", "Bell Tower 4F", false),
+    new PokemonHGSSSceneDesc("336", "Bell Tower 5F", false),
+    new PokemonHGSSSceneDesc("337", "Bell Tower 6F", false),
+    new PokemonHGSSSceneDesc("338", "Bell Tower 7F", false),
+    new PokemonHGSSSceneDesc("339", "Bell Tower 8F", false),
+    new PokemonHGSSSceneDesc("341", "Bell Tower 9F", false),
+    new PokemonHGSSSceneDesc("340", "Bell Tower Roof", false),
+    new PokemonHGSSSceneDesc("342", "Cliff Cave", false),
+    new PokemonHGSSSceneDesc("343", "Safari Zone Plains Area", false),
+    new PokemonHGSSSceneDesc("344", "Safari Zone Meadow Area", false),
+    new PokemonHGSSSceneDesc("345", "Safari Zone Savannah Area", false),
+    new PokemonHGSSSceneDesc("346", "Safari Zone Peak Area", false),
+    new PokemonHGSSSceneDesc("347", "Safari Zone Rocky Beach Area", false),
+    new PokemonHGSSSceneDesc("348", "Safari Zone Wetland Area", false),
+    new PokemonHGSSSceneDesc("349", "Safari Zone Forest Area", false),
+    new PokemonHGSSSceneDesc("350", "Safari Zone Swamp Area", false),
+    new PokemonHGSSSceneDesc("351", "Safari Zone Marshland Area", false),
+    new PokemonHGSSSceneDesc("352", "Safari Zone Wasteland Area", false),
+    new PokemonHGSSSceneDesc("353", "Safari Zone Mountain Area", false),
+    new PokemonHGSSSceneDesc("354", "Safari Zone Desert Area", false),
     new PokemonHGSSSceneDesc("361", "???"),
-    new PokemonHGSSSceneDesc("362", "Pokemon Club"),
+    new PokemonHGSSSceneDesc("362", "Pokemon Fan Club"),
     new PokemonHGSSSceneDesc("364", "???"),
-    new PokemonHGSSSceneDesc("365", "Vermillion City Gym"),
+    new PokemonHGSSSceneDesc("365", "Vermilion City Gym"),
     new PokemonHGSSSceneDesc("366", "Vertical Checkpoint"),
-    new PokemonHGSSSceneDesc("370", "Celadon Department Store F1"),
-    new PokemonHGSSSceneDesc("371", "Celadon Department Store F2"),
-    new PokemonHGSSSceneDesc("372", "Celadon Department Store F3"),
-    new PokemonHGSSSceneDesc("373", "Celadon Department Store F4"),
-    new PokemonHGSSSceneDesc("374", "Celadon Department Store F5"),
-    new PokemonHGSSSceneDesc("375", "Celadon Department Store F6"),
-    new PokemonHGSSSceneDesc("379", "Celadon Department Store Roof", false),
-    new PokemonHGSSSceneDesc("376", "???"),
-    new PokemonHGSSSceneDesc("377", "???"),
-    new PokemonHGSSSceneDesc("378", "Global Terminal 1F"),
+    new PokemonHGSSSceneDesc("370", "Celadon Department Store 1F"),
+    new PokemonHGSSSceneDesc("371", "Celadon Department Store 2F"),
+    new PokemonHGSSSceneDesc("372", "Celadon Department Store 3F"),
+    new PokemonHGSSSceneDesc("373", "Celadon Department Store 4F"),
+    new PokemonHGSSSceneDesc("374", "Celadon Department Store 5F"),
+    new PokemonHGSSSceneDesc("375", "Celadon Department Store 6F"),
+    new PokemonHGSSSceneDesc("376", "Celadon Condominiums 1F"),
+    new PokemonHGSSSceneDesc("377", "Celadon Condominiums 2F"),
+    new PokemonHGSSSceneDesc("378", "Celadon Condominiums 3F"),
+    new PokemonHGSSSceneDesc("379", "Celadon Condominiums Roof", false),
+    new PokemonHGSSSceneDesc("380", "Celadon Condominiums Roof Room"),
     new PokemonHGSSSceneDesc("412", "Global Terminal 2F"),
     new PokemonHGSSSceneDesc("413", "Global Terminal 3F"),
-    new PokemonHGSSSceneDesc("380", "???"),
     new PokemonHGSSSceneDesc("381", "Goldenrod Game Corner (JP Version)"),
     new PokemonHGSSSceneDesc("382", "Goldenrod Prize Corner"),
     new PokemonHGSSSceneDesc("383", "???", false),
     new PokemonHGSSSceneDesc("384", "Player's House 2F"),
     new PokemonHGSSSceneDesc("385", "???"),
-    new PokemonHGSSSceneDesc("386", "???"),
+    new PokemonHGSSSceneDesc("386", "Vermilion Port Entrance"),
     new PokemonHGSSSceneDesc("387", "S.S. Aqua", false),
     new PokemonHGSSSceneDesc("395", "???"),
     new PokemonHGSSSceneDesc("396", "Mahogany Gym Room 1"),
@@ -314,7 +315,7 @@ const sceneDescs = [
     new PokemonHGSSSceneDesc("400", "Saffron Train Station"),
     new PokemonHGSSSceneDesc("401", "Saffron Train Platform"),
     new PokemonHGSSSceneDesc("402", "???"),
-    new PokemonHGSSSceneDesc("403", "Bill's Lab"),
+    new PokemonHGSSSceneDesc("403", "Rotom's Room"),
     new PokemonHGSSSceneDesc("406", "???"),
     new PokemonHGSSSceneDesc("414", "???"),
     new PokemonHGSSSceneDesc("415", "???"),
@@ -322,4 +323,4 @@ const sceneDescs = [
     new PokemonHGSSSceneDesc("545", "???", false),
 ];
 
-export const sceneGroup: Viewer.SceneGroup = { id, name, sceneDescs };
+export const sceneGroup: Viewer.SceneGroup = { id, name, sceneDescs, altName: "Pokemon HeartGold SoulSilver HGSS" };

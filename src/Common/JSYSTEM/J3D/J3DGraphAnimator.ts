@@ -157,12 +157,61 @@ export class J3DFrameCtrl {
     }
 
     public checkPass(frame: number, deltaTimeFrames: number, currentTimeInFrames = this.currentTimeInFrames, speedInFrames = this.speedInFrames): boolean {
-        if (this.loopMode === LoopMode.ONCE || this.loopMode === LoopMode.ONCE_AND_RESET) {
-            const oldTime = currentTimeInFrames, newTime = currentTimeInFrames + (speedInFrames * deltaTimeFrames);
-            return oldTime < frame && newTime >= frame;
+        // https://github.com/zeldaret/tp/blob/master/libs/JSystem/J3DGraphAnimator/J3DAnimation.cpp
+        let oldTime = currentTimeInFrames, newTime = currentTimeInFrames + (speedInFrames * deltaTimeFrames);
+        if (this.loopMode === LoopMode.REPEAT) {
+            if (oldTime < this.startFrame) {
+                while (newTime < this.startFrame) {
+                    if (this.repeatStartFrame - this.startFrame <= 0.0)
+                        break;
+
+                    newTime += this.repeatStartFrame - this.startFrame;
+                }
+
+                return newTime <= frame && this.repeatStartFrame > frame;
+            } else if (this.endFrame <= oldTime) {
+                while (newTime >= this.endFrame) {            
+                    if (this.endFrame - this.repeatStartFrame <= 0.0)
+                        break;
+
+                    newTime -= this.endFrame - this.repeatStartFrame;
+                }
+
+                return this.repeatStartFrame <= frame && newTime > frame;
+            } else if (newTime < this.startFrame) {
+                while (newTime < this.startFrame) {            
+                    if (this.repeatStartFrame - this.startFrame <= 0.0)
+                        break;
+
+                    newTime += this.repeatStartFrame - this.startFrame;
+                }
+
+                return (this.startFrame <= frame && oldTime > frame) || (newTime <= frame && this.repeatStartFrame > frame);
+            } else if (this.endFrame <= newTime) {
+                while (newTime >= this.endFrame) {            
+                    if (this.endFrame - this.repeatStartFrame <= 0.0)
+                        break;
+
+                    newTime -= this.endFrame - this.repeatStartFrame;
+                }
+
+                return (oldTime <= frame && this.endFrame > frame) || (this.repeatStartFrame <= frame && newTime > frame);
+            } else {
+                if (oldTime <= newTime)
+                    return oldTime <= frame && newTime > frame;
+                else
+                    return newTime <= frame && oldTime > frame;
+            }
         } else {
-            // TODO(jstpierre): RE this.
-            return false;
+            if (newTime < this.startFrame)
+                newTime = this.startFrame;
+            else if (newTime >= this.endFrame)
+                newTime = this.endFrame - 0.001;
+
+            if (oldTime <= newTime)
+                return oldTime <= frame && newTime > frame;
+            else
+                return newTime <= frame && frame > oldTime;
         }
     }
 
@@ -172,19 +221,19 @@ export class J3DFrameCtrl {
 }
 
 export function VAF1_getVisibility(vaf1: VAF1, shapeIndex: number, animFrame: number): boolean {
-    const entry = assertExists(vaf1.visibilityAnimationTracks[shapeIndex]);
+    const bitmap = assertExists(vaf1.shapeVisibility[shapeIndex]);
 
     // animFrame can return a partial keyframe, but visibility information is frame-specific.
     // Resolve this by treating this as a stepped track, rounded. e.g. 15.9 is keyframe 16.
     const animFrameInt = (animFrame + 0.5) | 0;
 
     if (animFrameInt < 0) {
-        return entry.shapeVisibility.getBit(0);
-    } else if (animFrameInt >= entry.shapeVisibility.numBits) {
+        return bitmap.getBit(0);
+    } else if (animFrameInt >= bitmap.numBits) {
         // If we're past the end, use the last frame.
-        return entry.shapeVisibility.getBit(entry.shapeVisibility.numBits - 1);
+        return bitmap.getBit(bitmap.numBits - 1);
     } else {
-        return entry.shapeVisibility.getBit(animFrameInt);
+        return bitmap.getBit(animFrameInt);
     }
 }
 

@@ -82,6 +82,7 @@ import * as Scenes_SpongebobRevengeOfTheFlyingDutchman from "./SpongebobRevengeO
 import * as Scenes_MarioKart8Deluxe from './MarioKart8Deluxe/Scenes';
 import * as Scenes_JetSetRadio from './JetSetRadio/Scenes';
 import * as Scenes_Subnautica from './Subnautica/scenes';
+import * as Scenes_Halo1 from './Halo1/scenes';
 import * as Scenes_Glover from './Glover/scenes';
 import * as Scenes_HalfLife from './GoldSrc/Scenes_HalfLife';
 import * as Scenes_SuperMonkeyBall from './SuperMonkeyBall/Scenes_SuperMonkeyBall';
@@ -169,6 +170,7 @@ const sceneGroups = [
     Scenes_CounterStrikeSource.sceneGroup,
     Scenes_HalfLife2.sceneGroup,
     Scenes_HalfLife2DM.sceneGroup,
+    Scenes_NfsMostWanted.sceneGroup,
     Scenes_TeamFortress2.sceneGroup,
     Scenes_Portal.sceneGroup,
     Scenes_Portal2.sceneGroup,
@@ -180,7 +182,6 @@ const sceneGroups = [
     Scenes_GTA.sceneGroup.sa,
     Scenes_MarioAndSonicAtThe2012OlympicGames.sceneGroup,
     Scenes_MetroidPrime.sceneGroupMP3,
-    Scenes_NfsMostWanted.sceneGroup,
     Scenes_Psychonauts.sceneGroup,
     Scenes_SpongebobRevengeOfTheFlyingDutchman.sceneGroup,
     Scenes_SonicColors.sceneGroup,
@@ -203,6 +204,7 @@ const sceneGroups = [
     Scenes_Infra.sceneGroup,
     Scenes_JetSetRadio.sceneGroup,
     Scenes_Subnautica.sceneGroup,
+    Scenes_Halo1.sceneGroup,
     Scenes_HalfLife.sceneGroup,
 ];
 
@@ -417,6 +419,8 @@ class Main {
             this.ui.togglePlayPause(false);
             this.isFrameStep = true;
         }
+        if (inputManager.isKeyDownEventTriggered('F9'))
+            this._loadSceneDesc(this.currentSceneGroup!, this.currentSceneDesc!, this._getSceneSaveState(), true);
     }
 
     private async _onWebXRStateRequested(state: boolean) {
@@ -717,9 +721,9 @@ class Main {
 
     private loadSceneDelta = 1;
 
-    private _loadSceneDesc(sceneGroup: SceneGroup, sceneDesc: SceneDesc, sceneStateStr: string | null = null): void {
-        if (this.currentSceneDesc === sceneDesc) {
-            this._loadSceneSaveState(sceneStateStr);
+    private _loadSceneDesc(sceneGroup: SceneGroup, sceneDesc: SceneDesc, sceneStateStr: string | null = null, force: boolean = false): void {
+        if (this.currentSceneDesc === sceneDesc && !force) {
+            this._loadSceneSaveState(sceneStateStr)
             return;
         }
 

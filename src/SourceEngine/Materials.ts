@@ -11,10 +11,10 @@ import { VTF } from "./VTF";
 import { SourceRenderContext, SourceFileSystem, SourceEngineView, BSPRenderer, SourceEngineViewType } from "./Main";
 import { setAttachmentStateSimple } from "../gfx/helpers/GfxMegaStateDescriptorHelpers";
 import { SurfaceLightmapData, LightmapPacker, LightmapPackerPage, Cubemap, BSPFile, AmbientCube, WorldLight, WorldLightType, BSPLeaf, WorldLightFlags } from "./BSPFile";
-import { MathConstants, invlerp, lerp, clamp, Vec3Zero, Vec3UnitX, Vec3NegX, Vec3UnitY, Vec3NegY, Vec3UnitZ, Vec3NegZ, scaleMatrix } from "../MathHelpers";
+import { MathConstants, invlerp, lerp, clamp, Vec3Zero, Vec3UnitX, Vec3NegX, Vec3UnitY, Vec3NegY, Vec3UnitZ, Vec3NegZ, scaleMatrix, saturate } from "../MathHelpers";
 import { colorNewCopy, White, Color, colorCopy, colorScaleAndAdd, colorFromRGBA, colorNewFromRGBA, TransparentBlack, colorScale, OpaqueBlack } from "../Color";
 import { drawWorldSpaceLine, drawWorldSpacePoint, getDebugOverlayCanvas2D } from "../DebugJunk";
-import { GfxShaderLibrary } from "../gfx/helpers/GfxShaderLibrary";
+import { GfxShaderLibrary, glslGenerateFloat } from "../gfx/helpers/GfxShaderLibrary";
 import { IS_DEPTH_REVERSED } from "../gfx/helpers/ReversedDepthHelpers";
 import { makeStaticDataBuffer } from "../gfx/helpers/BufferHelpers";
 import { dfRange, dfShow } from "../DebugFloaters";
@@ -24,10 +24,13 @@ import { gfxDeviceNeedsFlipY } from "../gfx/helpers/GfxDeviceHelpers";
 import { UberShaderInstanceBasic, UberShaderTemplateBasic } from "./UberShader";
 import { makeSolidColorTexture2D } from "../gfx/helpers/TextureHelpers";
 import { ParticleSystemCache } from "./ParticleSystem";
+import { HitInfo } from "../SuperMarioGalaxy/Collision";
 
 //#region Base Classes
 const scratchColor = colorNewCopy(White);
-const textureMappings = nArray(14, () => new TextureMapping());
+const textureMappings = nArray(15, () => new TextureMapping());
+
+const RGBM_SCALE = 6.0;
 
 function resetTextureMappings(m: TextureMapping[]): void {
     for (let i = 0; i < m.length; i++)
@@ -37,6 +40,7 @@ function resetTextureMappings(m: TextureMapping[]): void {
 export const enum StaticLightingMode {
     None,
     StudioVertexLighting,
+    StudioVertexLighting3,
     StudioAmbientCube,
 }
 
@@ -91,11 +95,13 @@ export class MaterialShaderTemplateBase extends UberShaderTemplateBasic {
     public static a_Position = 0;
     public static a_Normal = 1;
     public static a_TangentS = 2;
-    public static a_TexCoord = 3;
-    public static a_Color = 4;
-    public static a_StaticVertexLighting = 5;
-    public static a_BoneWeights = 6;
-    public static a_BoneIDs = 7;
+    public static a_TexCoord01 = 4;
+    public static a_Color = 5;
+    public static a_StaticVertexLighting0 = 6;
+    public static a_StaticVertexLighting1 = 7;
+    public static a_StaticVertexLighting2 = 8;
+    public static a_BoneWeights = 9;
+    public static a_BoneIDs = 10;
 
     public static ub_SceneParams = 0;
     public static ub_SkinningParams = 1;
@@ -103,6 +109,10 @@ export class MaterialShaderTemplateBase extends UberShaderTemplateBasic {
     public static MaxSkinningParamsBoneMatrix = 53;
 
     public static Common = `
+// Debug utilities.
+// #define DEBUG_DIFFUSEONLY 1
+// #define DEBUG_FULLBRIGHT 1
+
 layout(std140) uniform ub_SceneParams {
     Mat4x4 u_ProjectionView;
     vec4 u_SceneMisc[3];
@@ -124,8 +134,6 @@ layout(std140) uniform ub_SkinningParams {
 #define u_FogStart       (u_SceneMisc[2].x)
 #define u_FogEnd         (u_SceneMisc[2].y)
 #define u_FogMaxDensity  (u_SceneMisc[2].z)
-
-const float g_LightmapScale = 16.0;
 
 // NOTE(jstpierre): This appears to be 16.0 in the original engine, because they used to use a 4.12
 // 16-bit 4.12 fixed point format for environment maps. When encountering an R16G16B16A16F texture,
@@ -182,7 +190,7 @@ vec3 GammaToLinear(in vec3 t_Color) {
 }
 
 void CalcFog(inout vec4 t_Color, in vec3 t_PositionWorld) {
-#ifdef USE_FOG
+#if defined USE_FOG
     float t_DistanceWorld = distance(t_PositionWorld.xyz, u_CameraPosWorld.xyz);
     float t_FogFactor = saturate(invlerp(u_FogStart, u_FogEnd, t_DistanceWorld));
     t_FogFactor = min(t_FogFactor, u_FogMaxDensity);
@@ -194,16 +202,36 @@ void CalcFog(inout vec4 t_Color, in vec3 t_PositionWorld) {
 #endif
 }
 
-#ifdef VERT
+vec4 DebugColorTexture(in vec4 t_TextureSample) {
+#if defined DEBUG_DIFFUSEONLY
+    t_TextureSample.rgb = vec3(0.5);
+#endif
+
+    return t_TextureSample;
+}
+
+vec3 SampleLightmapTexture(in vec4 t_TextureSample) {
+#if defined DEBUG_FULLBRIGHT
+    return vec3(1.0);
+#endif
+
+    return t_TextureSample.rgb * t_TextureSample.a * ${glslGenerateFloat(RGBM_SCALE)};
+}
+
+#if defined VERT
 layout(location = ${MaterialShaderTemplateBase.a_Position}) in vec3 a_Position;
 layout(location = ${MaterialShaderTemplateBase.a_Normal}) in vec4 a_Normal;
 layout(location = ${MaterialShaderTemplateBase.a_TangentS}) in vec4 a_TangentS;
-layout(location = ${MaterialShaderTemplateBase.a_TexCoord}) in vec4 a_TexCoord;
-#ifdef USE_VERTEX_COLOR
+layout(location = ${MaterialShaderTemplateBase.a_TexCoord01}) in vec4 a_TexCoord01;
+#if defined USE_VERTEX_COLOR
 layout(location = ${MaterialShaderTemplateBase.a_Color}) in vec4 a_Color;
 #endif
-#ifdef USE_STATIC_VERTEX_LIGHTING
-layout(location = ${MaterialShaderTemplateBase.a_StaticVertexLighting}) in vec3 a_StaticVertexLighting;
+#if defined USE_STATIC_VERTEX_LIGHTING
+layout(location = ${MaterialShaderTemplateBase.a_StaticVertexLighting0}) in vec3 a_StaticVertexLighting0;
+#if defined USE_STATIC_VERTEX_LIGHTING_3
+layout(location = ${MaterialShaderTemplateBase.a_StaticVertexLighting1}) in vec3 a_StaticVertexLighting1;
+layout(location = ${MaterialShaderTemplateBase.a_StaticVertexLighting2}) in vec3 a_StaticVertexLighting2;
+#endif
 #endif
 #if SKINNING_MODE == ${SkinningMode.Smooth}
 layout(location = ${MaterialShaderTemplateBase.a_BoneWeights}) in vec4 a_BoneWeights;
@@ -227,7 +255,7 @@ Mat4x3 CalcWorldFromLocalMatrix() {
 }
 #endif
 
-#ifdef FRAG
+#if defined FRAG
 layout(location = 0) out vec4 o_Color0;
 
 void OutputLinearColor(in vec4 t_Color) {
@@ -1165,77 +1193,110 @@ struct WorldLight {
 };
 
 layout(std140) uniform ub_ObjectParams {
-#ifdef USE_AMBIENT_CUBE
+#if defined USE_AMBIENT_CUBE
     // TODO(jstpierre): Pack this more efficiently?
     vec4 u_AmbientCube[6];
 #endif
-#ifdef USE_DYNAMIC_LIGHTING
+#if defined USE_DYNAMIC_LIGHTING
     // We support up to N lights.
     WorldLight u_WorldLights[${ShaderTemplate_Generic.MaxDynamicWorldLights}];
 #endif
     Mat4x2 u_BaseTextureTransform;
-#ifdef USE_BUMPMAP
+#if defined USE_BUMPMAP
     Mat4x2 u_BumpmapTransform;
 #endif
-#ifdef USE_BUMPMAP2
+#if defined USE_BUMPMAP2
     Mat4x2 u_Bumpmap2Transform;
 #endif
-#ifdef USE_DETAIL
+#if defined USE_DETAIL
     Mat4x2 u_DetailTextureTransform;
 #endif
-#ifdef USE_ENVMAP_MASK
+#if defined USE_ENVMAP_MASK
     vec4 u_EnvmapMaskScaleBias;
 #endif
-#ifdef USE_BLEND_MODULATE
+#if defined USE_BLEND_MODULATE
     vec4 u_BlendModulateScaleBias;
 #endif
-#ifdef USE_ENVMAP
+#if defined USE_ENVMAP
     vec4 u_EnvmapTint;
     vec4 u_EnvmapContrastSaturationFresnelLightScale;
 #endif
-#ifdef USE_SELFILLUM
+#if defined USE_SELFILLUM
     vec4 u_SelfIllumTint;
 #endif
-#ifdef USE_SELFILLUM_FRESNEL
+#if defined USE_SELFILLUM_FRESNEL
     vec4 u_SelfIllumFresnel;
 #endif
-#ifdef USE_PHONG
-    vec4 u_FresnelRangeSpecBoost;
+#if defined USE_PHONG
+    vec4 u_FresnelRangeSpecAlbedoBoost;
+    vec4 u_SpecTintBoost;
 #endif
-#ifdef USE_PROJECTED_LIGHT
+#if defined USE_PROJECTED_LIGHT
     Mat4x4 u_ProjectedLightFromWorldMatrix;
     vec4 u_ProjectedLightColor;
     vec4 u_ProjectedLightOrigin;
 #endif
+#if defined USE_TREE_SWAY
+
+#define u_TreeSwayWindDir              (u_TreeSwayParam[0].xy)
+#define u_TreeSwayTime                 (u_TreeSwayParam[0].z)
+#define u_TreeSwaySpeed                (u_TreeSwayParam[0].w)
+
+#define u_TreeSwayHeight               (u_TreeSwayParam[1].x)
+#define u_TreeSwayStartHeight          (u_TreeSwayParam[1].y)
+#define u_TreeSwayRadius               (u_TreeSwayParam[1].z)
+#define u_TreeSwayStartRadius          (u_TreeSwayParam[1].w)
+
+#define u_TreeSwayIntensity            (u_TreeSwayParam[2].x)
+#define u_TreeSwayIntensityPow         (u_TreeSwayParam[2].y)
+#define u_TreeSwayFastScale            (u_TreeSwayParam[2].z)
+
+#define u_TreeSwayScrumbleIntensity    (u_TreeSwayParam[3].x)
+#define u_TreeSwayScrumbleIntensityPow (u_TreeSwayParam[3].y)
+#define u_TreeSwayScrumbleFrequency    (u_TreeSwayParam[3].z)
+#define u_TreeSwayScrumbleSpeed        (u_TreeSwayParam[3].w)
+
+// TODO(jstpierre): If we combine time and speed, I think we can lose a vec4 here...
+#define u_TreeSwaySpeedLerpStart       (u_TreeSwayParam[4].x)
+#define u_TreeSwaySpeedLerpEnd         (u_TreeSwayParam[4].y)
+
+vec4 u_TreeSwayParam[5];
+
+#endif
     vec4 u_ModulationColor;
-    vec4 u_Misc[1];
-};
 
 #define u_AlphaTestReference (u_Misc[0].x)
 #define u_DetailBlendFactor  (u_Misc[0].y)
 #define u_SpecExponentFactor (u_Misc[0].z)
 #define u_SeamlessScale      (u_Misc[0].w)
+    vec4 u_Misc[1];
+};
 
 #define HAS_FULL_TANGENTSPACE (USE_BUMPMAP)
 
 // Base, Raw Coords
 varying vec4 v_TexCoord0;
-// Lightmap
+// Lightmap / Decal
 varying vec2 v_TexCoord1;
 
 // w contains BaseTexture2 blend factor.
 varying vec4 v_PositionWorld;
 varying vec4 v_Color;
-varying vec3 v_DiffuseLighting;
+varying vec3 v_DiffuseLighting0;
 
-#ifdef HAS_FULL_TANGENTSPACE
+#if defined USE_STATIC_VERTEX_LIGHTING_3
+varying vec3 v_DiffuseLighting1;
+varying vec3 v_DiffuseLighting2;
+#endif
+
+#if defined HAS_FULL_TANGENTSPACE
 // 3x3 matrix for our tangent space basis.
 varying vec3 v_TangentSpaceBasis0;
 varying vec3 v_TangentSpaceBasis1;
 #endif
 // Just need the vertex normal component.
 varying vec3 v_TangentSpaceBasis2;
-#ifdef USE_DYNAMIC_PIXEL_LIGHTING
+#if defined USE_DYNAMIC_PIXEL_LIGHTING
 varying vec4 v_LightAtten;
 #endif
 
@@ -1253,9 +1314,6 @@ layout(binding = 10) uniform sampler2DArray u_TextureLightmap;
 layout(binding = 11) uniform samplerCube u_TextureEnvmap;
 layout(binding = 12) uniform sampler2DShadow u_TextureProjectedLightDepth;
 layout(binding = 13) uniform sampler2D u_TextureProjectedLight;
-
-// #define DEBUG_DIFFUSEONLY 1
-// #define DEBUG_FULLBRIGHT 1
 
 float ApplyAttenuation(vec3 t_Coeff, float t_Value) {
     return dot(t_Coeff, vec3(1.0, t_Value, t_Value*t_Value));
@@ -1334,7 +1392,7 @@ vec3 WorldLightCalcDiffuse(in vec3 t_PositionWorld, in vec3 t_NormalWorld, bool 
     return t_WorldLight.Color.rgb * t_Attenuation * t_Visibility;
 }
 
-#ifdef USE_DYNAMIC_LIGHTING
+#if defined USE_DYNAMIC_LIGHTING
 vec4 WorldLightCalcAllAttenuation(in vec3 t_PositionWorld) {
     vec4 t_FinalAtten = vec4(0.0);
     for (int i = 0; i < ${ShaderTemplate_Generic.MaxDynamicWorldLights}; i++)
@@ -1343,7 +1401,7 @@ vec4 WorldLightCalcAllAttenuation(in vec3 t_PositionWorld) {
 }
 
 vec3 WorldLightCalcAllDiffuse(in DiffuseLightInput t_DiffuseLightInput) {
-#ifdef DEBUG_FULLBRIGHT
+#if defined DEBUG_FULLBRIGHT
     return vec3(0.0);
 #else
     vec3 t_FinalLight = vec3(0.0);
@@ -1354,9 +1412,9 @@ vec3 WorldLightCalcAllDiffuse(in DiffuseLightInput t_DiffuseLightInput) {
 }
 #endif
 
-#ifdef USE_AMBIENT_CUBE
+#if defined USE_AMBIENT_CUBE
 vec3 AmbientLight(in vec3 t_NormalWorld) {
-#ifdef DEBUG_FULLBRIGHT
+#if defined DEBUG_FULLBRIGHT
     return vec3(1.0);
 #else
     vec3 t_Weight = t_NormalWorld * t_NormalWorld;
@@ -1370,42 +1428,91 @@ vec3 AmbientLight(in vec3 t_NormalWorld) {
 }
 #endif
 
-#ifdef VERT
-void mainVS() {
+void CalcTreeSway(inout vec3 t_PositionLocal) {
+#if defined VERT && defined USE_TREE_SWAY
+
     Mat4x3 t_WorldFromLocalMatrix = CalcWorldFromLocalMatrix();
-    vec3 t_PositionWorld = Mul(t_WorldFromLocalMatrix, vec4(a_Position, 1.0));
+    float t_WindIntensity = length(u_TreeSwayWindDir);
+    vec3 t_WindDirLocal = Mul(vec3(u_TreeSwayWindDir, 0.0), t_WorldFromLocalMatrix).xyz;
+
+    vec3 t_PosOffs = vec3(0.0);
+
+    vec3 t_OriginWorld = Mul(t_WorldFromLocalMatrix, vec4(0.0, 0.0, 0.0, 1.0));
+    float t_TimeOffset = dot(t_OriginWorld, vec3(1.0)) * 19.0;
+
+    float t_SwayTime = (u_TreeSwayTime + t_TimeOffset) * u_TreeSwaySpeed;
+    float t_SpeedLerp = smoothstep(u_TreeSwaySpeedLerpStart, u_TreeSwaySpeedLerpEnd, t_WindIntensity);
+
+    float t_ScaleHeight = saturate(invlerp(t_PositionLocal.z, u_TreeSwayHeight * u_TreeSwayStartHeight, u_TreeSwayHeight));
+
+    float t_TrunkSin = mix(sin(t_SwayTime), sin(u_TreeSwayFastScale * t_SwayTime), t_SpeedLerp);
+    float t_TrunkSwayIntensity = (u_TreeSwayIntensity * pow(t_ScaleHeight, u_TreeSwayIntensityPow)) * (t_TrunkSin + 0.1);
+    t_PosOffs.xyz += t_WindDirLocal * t_TrunkSwayIntensity;
+
+    if (t_ScaleHeight > 0.0) {
+        float t_ScaleRadius = saturate(invlerp(length(t_PositionLocal), u_TreeSwayRadius * u_TreeSwayStartRadius, u_TreeSwayRadius));
+
+        float t_BranchScale = 1.0 - abs(dot(normalize(t_WindDirLocal), vec3(normalize(t_PositionLocal.xy), 0.0)));
+        float t_BranchSin = mix(sin(2.31 * t_SwayTime), sin(2.41 * u_TreeSwayFastScale * t_SwayTime), t_SpeedLerp);
+        float t_BranchSwayIntensity = u_TreeSwayIntensity * t_BranchScale * t_ScaleRadius * (t_BranchSin + 0.4);
+        t_PosOffs.xyz += t_WindDirLocal * t_BranchSwayIntensity;
+
+        vec3 t_ScrumblePhase = normalize(t_PositionLocal.yzx) * u_TreeSwayScrumbleFrequency;
+        vec3 t_ScrumbleScale = vec3(u_TreeSwayIntensity * pow(t_ScaleRadius, u_TreeSwayScrumbleIntensityPow));
+        t_PosOffs.xyz += t_WindIntensity * t_ScrumbleScale * sin(u_TreeSwayScrumbleSpeed * u_TreeSwayTime + t_ScrumblePhase + t_TimeOffset);
+    }
+
+    t_PositionLocal.xyz += t_PosOffs.xyz;
+#endif
+}
+
+#if defined VERT
+void mainVS() {
+    vec3 t_PositionLocal = a_Position;
+    CalcTreeSway(t_PositionLocal);
+
+    Mat4x3 t_WorldFromLocalMatrix = CalcWorldFromLocalMatrix();
+    vec3 t_PositionWorld = Mul(t_WorldFromLocalMatrix, vec4(t_PositionLocal, 1.0));
     v_PositionWorld.xyz = t_PositionWorld;
     gl_Position = Mul(u_ProjectionView, vec4(t_PositionWorld, 1.0));
 
-    vec3 t_NormalWorld = Mul(t_WorldFromLocalMatrix, vec4(a_Normal.xyz, 0.0));
+    vec3 t_NormalWorld = normalize(Mul(t_WorldFromLocalMatrix, vec4(a_Normal.xyz, 0.0)));
 
-#ifdef USE_VERTEX_COLOR
+#if defined USE_VERTEX_COLOR
     v_Color = a_Color;
 #else
     v_Color = vec4(1.0);
 #endif
 
-    v_DiffuseLighting.rgb = vec3(1.0);
+    v_DiffuseLighting0.rgb = vec3(0.0);
 
-#ifdef USE_DYNAMIC_LIGHTING
-    vec4 t_LightAtten = WorldLightCalcAllAttenuation(t_PositionWorld.xyz);
-    v_DiffuseLighting.rgb = vec3(0.0);
+#if !defined USE_DYNAMIC_LIGHTING && !defined USE_STATIC_VERTEX_LIGHTING
+    // If we don't have any lighting, it's fullbright.
+    v_DiffuseLighting0.rgb = vec3(1.0);
 #endif
 
-#ifdef USE_STATIC_VERTEX_LIGHTING
+#if defined USE_DYNAMIC_LIGHTING
+    vec4 t_LightAtten = WorldLightCalcAllAttenuation(t_PositionWorld.xyz);
+#endif
+
+#if defined USE_STATIC_VERTEX_LIGHTING
     // Static vertex lighting should already include ambient lighting.
     // 2.0 here is overbright.
-    v_DiffuseLighting.rgb += GammaToLinear(a_StaticVertexLighting * 2.0);
+    v_DiffuseLighting0.rgb = GammaToLinear(a_StaticVertexLighting0 * 2.0);
+
+#if defined USE_STATIC_VERTEX_LIGHTING_3
+    v_DiffuseLighting1.rgb = GammaToLinear(a_StaticVertexLighting1 * 2.0);
+    v_DiffuseLighting2.rgb = GammaToLinear(a_StaticVertexLighting2 * 2.0);
+#endif
 #endif
 
-#ifdef USE_DYNAMIC_VERTEX_LIGHTING
-
-#ifdef USE_AMBIENT_CUBE
-    v_DiffuseLighting.rgb += AmbientLight(t_NormalWorld);
+#if defined USE_DYNAMIC_VERTEX_LIGHTING
+#if defined USE_AMBIENT_CUBE
+    v_DiffuseLighting0.rgb += AmbientLight(t_NormalWorld);
 #endif
 
     bool t_HalfLambert = false;
-#ifdef USE_HALF_LAMBERT
+#if defined USE_HALF_LAMBERT
     t_HalfLambert = true;
 #endif
 
@@ -1415,29 +1522,24 @@ void mainVS() {
     t_DiffuseLightInput.LightAttenuation = t_LightAtten.xyzw;
     t_DiffuseLightInput.HalfLambert = t_HalfLambert;
     vec3 t_DiffuseLighting = WorldLightCalcAllDiffuse(t_DiffuseLightInput);
-    v_DiffuseLighting.rgb += t_DiffuseLighting;
+    v_DiffuseLighting0.rgb += t_DiffuseLighting;
 #endif
 
-#ifdef USE_DYNAMIC_PIXEL_LIGHTING
+#if defined USE_DYNAMIC_PIXEL_LIGHTING
     v_LightAtten.xyzw = t_LightAtten;
 #endif
 
-// TODO(jstpierre): Move ModulationColor to PS, support $blendtintbybasealpha and $blendtintcoloroverbase
-#ifdef USE_MODULATIONCOLOR_COLOR
-    v_Color.rgb *= u_ModulationColor.rgb;
-#endif
-
-#ifdef USE_MODULATIONCOLOR_ALPHA
+#if defined USE_MODULATIONCOLOR_ALPHA
     v_Color.a *= u_ModulationColor.a;
 #endif
 
-#ifdef USE_BASETEXTURE2
+#if defined USE_BASETEXTURE2
     // This is the BaseTexture2 blend factor, smuggled through using unobvious means.
     v_PositionWorld.w = a_Normal.w;
 #endif
 
-#ifdef HAS_FULL_TANGENTSPACE
-    vec3 t_TangentSWorld = Mul(t_WorldFromLocalMatrix, vec4(a_TangentS.xyz, 0.0));
+#if defined HAS_FULL_TANGENTSPACE
+    vec3 t_TangentSWorld = normalize(Mul(t_WorldFromLocalMatrix, vec4(a_TangentS.xyz, 0.0)));
     vec3 t_TangentTWorld = cross(t_TangentSWorld, t_NormalWorld);
 
     v_TangentSpaceBasis0 = t_TangentSWorld * a_TangentS.w;
@@ -1445,59 +1547,59 @@ void mainVS() {
 #endif
     v_TangentSpaceBasis2 = t_NormalWorld;
 
-    v_TexCoord0.xy = Mul(u_BaseTextureTransform, vec4(a_TexCoord.xy, 1.0, 1.0));
-    v_TexCoord0.zw = a_TexCoord.xy;
-#ifdef USE_LIGHTMAP
-    v_TexCoord1.xy = a_TexCoord.zw;
+    v_TexCoord0.xy = Mul(u_BaseTextureTransform, vec4(a_TexCoord01.xy, 1.0, 1.0));
+    v_TexCoord0.zw = a_TexCoord01.xy;
+#if defined USE_LIGHTMAP || defined USE_DECAL
+    v_TexCoord1.xy = a_TexCoord01.zw;
 #endif
 }
 #endif
 
-#ifdef FRAG
+#if defined FRAG
 
-#define COMBINE_MODE_MUL_DETAIL2                             (0)
-#define COMBINE_MODE_RGB_ADDITIVE                            (1)
-#define COMBINE_MODE_DETAIL_OVER_BASE                        (2)
-#define COMBINE_MODE_FADE                                    (3)
-#define COMBINE_MODE_BASE_OVER_DETAIL                        (4)
-#define COMBINE_MODE_RGB_ADDITIVE_SELFILLUM                  (5)
-#define COMBINE_MODE_RGB_ADDITIVE_SELFILLUM_THRESHOLD_FADE   (6)
-#define COMBINE_MODE_MOD2X_SELECT_TWO_PATTERNS               (7)
-#define COMBINE_MODE_MULTIPLY                                (8)
-#define COMBINE_MODE_MASK_BASE_BY_DETAIL_ALPHA               (9)
-#define COMBINE_MODE_SSBUMP_BUMP                             (10)
-#define COMBINE_MODE_SSBUMP_NOBUMP                           (11)
+#define DETAIL_BLEND_MODE_MUL_DETAIL2                             (0)
+#define DETAIL_BLEND_MODE_RGB_ADDITIVE                            (1)
+#define DETAIL_BLEND_MODE_DETAIL_OVER_BASE                        (2)
+#define DETAIL_BLEND_MODE_FADE                                    (3)
+#define DETAIL_BLEND_MODE_BASE_OVER_DETAIL                        (4)
+#define DETAIL_BLEND_MODE_RGB_ADDITIVE_SELFILLUM                  (5)
+#define DETAIL_BLEND_MODE_RGB_ADDITIVE_SELFILLUM_THRESHOLD_FADE   (6)
+#define DETAIL_BLEND_MODE_MOD2X_SELECT_TWO_PATTERNS               (7)
+#define DETAIL_BLEND_MODE_MULTIPLY                                (8)
+#define DETAIL_BLEND_MODE_MASK_BASE_BY_DETAIL_ALPHA               (9)
+#define DETAIL_BLEND_MODE_SSBUMP_BUMP                             (10)
+#define DETAIL_BLEND_MODE_SSBUMP_NOBUMP                           (11)
 
 vec4 CalcDetail(in vec4 t_BaseTexture, in vec4 t_DetailTexture) {
     bool use_detail = ${getDefineBool(m, 'USE_DETAIL')};
     if (!use_detail)
         return t_BaseTexture;
 
-    int t_CombineMode = ${getDefineString(m, 'DETAIL_COMBINE_MODE')};
+    int t_BlendMode = ${getDefineString(m, 'DETAIL_BLEND_MODE')};
     float t_BlendFactor = u_DetailBlendFactor;
 
-    if (t_CombineMode == COMBINE_MODE_MUL_DETAIL2) {
+    if (t_BlendMode == DETAIL_BLEND_MODE_MUL_DETAIL2) {
         return t_BaseTexture * mix(vec4(1.0), t_DetailTexture * 2.0, t_BlendFactor);
-    } else if (t_CombineMode == COMBINE_MODE_RGB_ADDITIVE) {
+    } else if (t_BlendMode == DETAIL_BLEND_MODE_RGB_ADDITIVE) {
         return t_BaseTexture + t_DetailTexture * t_BlendFactor;
-    } else if (t_CombineMode == COMBINE_MODE_DETAIL_OVER_BASE) {
+    } else if (t_BlendMode == DETAIL_BLEND_MODE_DETAIL_OVER_BASE) {
         return vec4(mix(t_BaseTexture.rgb, t_DetailTexture.rgb, t_BlendFactor * t_DetailTexture.a), t_BaseTexture.a);
-    } else if (t_CombineMode == COMBINE_MODE_FADE) {
+    } else if (t_BlendMode == DETAIL_BLEND_MODE_FADE) {
         return mix(t_BaseTexture, t_DetailTexture, t_BlendFactor);
-    } else if (t_CombineMode == COMBINE_MODE_BASE_OVER_DETAIL) {
+    } else if (t_BlendMode == DETAIL_BLEND_MODE_BASE_OVER_DETAIL) {
         return vec4(mix(t_BaseTexture.rgb, t_DetailTexture.rgb, (t_BlendFactor * (1.0 - t_BaseTexture.a))), t_DetailTexture.a);
-    } else if (t_CombineMode == COMBINE_MODE_MULTIPLY) {
+    } else if (t_BlendMode == DETAIL_BLEND_MODE_MULTIPLY) {
         return mix(t_BaseTexture, t_BaseTexture * t_DetailTexture, t_BlendFactor);
-    } else if (t_CombineMode == COMBINE_MODE_MOD2X_SELECT_TWO_PATTERNS) {
+    } else if (t_BlendMode == DETAIL_BLEND_MODE_MOD2X_SELECT_TWO_PATTERNS) {
         vec4 t_DetailPattern = vec4(mix(t_DetailTexture.r, t_DetailTexture.a, t_BaseTexture.a));
         return t_BaseTexture * mix(vec4(1.0), t_DetailPattern * 2.0, t_BlendFactor);
-    } else if (t_CombineMode == COMBINE_MODE_RGB_ADDITIVE_SELFILLUM || t_CombineMode == COMBINE_MODE_RGB_ADDITIVE_SELFILLUM_THRESHOLD_FADE) {
+    } else if (t_BlendMode == DETAIL_BLEND_MODE_RGB_ADDITIVE_SELFILLUM || t_BlendMode == DETAIL_BLEND_MODE_RGB_ADDITIVE_SELFILLUM_THRESHOLD_FADE) {
         // Done in Post-Lighting.
         return t_BaseTexture;
-    } else if (t_CombineMode == COMBINE_MODE_SSBUMP_BUMP) {
+    } else if (t_BlendMode == DETAIL_BLEND_MODE_SSBUMP_BUMP) {
         // Done as part of bumpmapping.
         return t_BaseTexture;
-    } else if (t_CombineMode == COMBINE_MODE_SSBUMP_NOBUMP) {
+    } else if (t_BlendMode == DETAIL_BLEND_MODE_SSBUMP_NOBUMP) {
         return vec4(t_BaseTexture.rgb * dot(t_DetailTexture.rgb, vec3(2.0 / 3.0)), t_BaseTexture.a);
     }
 
@@ -1510,12 +1612,12 @@ vec3 CalcDetailPostLighting(in vec3 t_DiffuseColor, in vec3 t_DetailTexture) {
     if (!use_detail)
         return t_DiffuseColor;
 
-    int t_CombineMode = ${getDefineString(m, 'DETAIL_COMBINE_MODE')};
+    int t_BlendMode = ${getDefineString(m, 'DETAIL_BLEND_MODE')};
     float t_BlendFactor = u_DetailBlendFactor;
 
-    if (t_CombineMode == COMBINE_MODE_RGB_ADDITIVE_SELFILLUM) {
+    if (t_BlendMode == DETAIL_BLEND_MODE_RGB_ADDITIVE_SELFILLUM) {
         return t_DiffuseColor.rgb + t_DetailTexture.rgb * t_BlendFactor;
-    } else if (t_CombineMode == COMBINE_MODE_RGB_ADDITIVE_SELFILLUM_THRESHOLD_FADE) {
+    } else if (t_BlendMode == DETAIL_BLEND_MODE_RGB_ADDITIVE_SELFILLUM_THRESHOLD_FADE) {
         // Remap.
         if (t_BlendFactor >= 0.5) {
             float t_Mult = (1.0 / t_BlendFactor);
@@ -1528,6 +1630,30 @@ vec3 CalcDetailPostLighting(in vec3 t_DiffuseColor, in vec3 t_DetailTexture) {
 
     // Nothing to do.
     return t_DiffuseColor.rgb;
+}
+
+#define DECAL_BLEND_MODE_ALPHA      0
+#define DECAL_BLEND_MODE_MUL        1
+
+vec3 CalcDecal(in vec3 t_BaseTexture, in vec3 t_DecalLighting) {
+    bool use_decal = ${getDefineBool(m, 'USE_DECAL')};
+    if (!use_decal)
+        return t_BaseTexture;
+
+    vec2 t_DecalTexCoord = v_TexCoord1.xy;
+
+    // Decal reuses $basetexture2 slot...
+    vec4 t_DecalTexture = DebugColorTexture(texture(SAMPLER_2D(u_TextureBase2), t_DecalTexCoord));
+
+    int t_BlendMode = ${getDefineString(m, 'DECAL_BLEND_MODE')};
+    if (t_BlendMode == DECAL_BLEND_MODE_ALPHA) {
+        return mix(t_BaseTexture.rgb, t_DecalTexture.rgb * t_DecalLighting.rgb, t_DecalTexture.a);
+    } else if (t_BlendMode == DECAL_BLEND_MODE_MUL) {
+        return t_BaseTexture.rgb * t_DecalTexture.rgb;
+    }
+
+    // Unknown.
+    return t_BaseTexture + vec3(1.0, 0.0, 1.0);
 }
 
 // https://steamcdn-a.akamaihd.net/apps/valve/2004/GDC2004_Half-Life2_Shading.pdf#page=10
@@ -1584,27 +1710,11 @@ SpecularLightResult WorldLightCalcSpecular(in SpecularLightInput t_Input, in Wor
 
 SpecularLightResult WorldLightCalcAllSpecular(in SpecularLightInput t_Input) {
     SpecularLightResult t_FinalLight = SpecularLightResult_New();
-#ifdef USE_DYNAMIC_PIXEL_LIGHTING
+#if defined USE_DYNAMIC_PIXEL_LIGHTING
     for (int i = 0; i < ${ShaderTemplate_Generic.MaxDynamicWorldLights}; i++)
         SpecularLightResult_Sum(t_FinalLight, WorldLightCalcSpecular(t_Input, u_WorldLights[i]));
 #endif
     return t_FinalLight;
-}
-
-vec4 DebugColorTexture(in vec4 t_TextureSample) {
-#ifdef DEBUG_DIFFUSEONLY
-    t_TextureSample.rgb = vec3(0.5);
-#endif
-
-    return t_TextureSample;
-}
-
-vec3 SampleLightmapTexture(in vec4 t_TextureSample) {
-#ifdef DEBUG_FULLBRIGHT
-    return vec3(1.0);
-#endif
-
-    return t_TextureSample.rgb * g_LightmapScale;
 }
 
 vec4 UnpackNormalMap(vec4 t_Sample) {
@@ -1614,28 +1724,32 @@ vec4 UnpackNormalMap(vec4 t_Sample) {
     return t_Sample;
 }
 
-vec4 SeamlessSampleTex(PD_SAMPLER_2D(t_Texture), in vec2 t_TexCoord) {
-    bool use_seamless = ${getDefineBool(m, `USE_SEAMLESS`)};
-    if (use_seamless) {
-        // Seamless ignores the base texture coordinate, and instead blends three copies
-        // of the same texture based on world position (similar to tri-planar).
+vec4 SeamlessSampleTex(PD_SAMPLER_2D(t_Texture), in float t_SeamlessScale) {
+    // Seamless ignores the base texture coordinate, and instead blends three copies
+    // of the same texture based on world position (similar to tri-planar).
 
-        vec3 t_BaseTexCoord = v_PositionWorld.xyz * u_SeamlessScale;
+    t_SeamlessScale *= u_SeamlessScale;
+    vec3 t_BaseTexCoord = v_PositionWorld.xyz * t_SeamlessScale;
 
-        // Weights should sum to 1.
-        vec3 t_Weights = v_TangentSpaceBasis2.xyz * v_TangentSpaceBasis2.xyz;
-        vec4 t_Sample = vec4(0.0);
-        t_Sample += texture(PU_SAMPLER_2D(t_Texture), t_BaseTexCoord.zy) * t_Weights.x;
-        t_Sample += texture(PU_SAMPLER_2D(t_Texture), t_BaseTexCoord.xz) * t_Weights.y;
-        t_Sample += texture(PU_SAMPLER_2D(t_Texture), t_BaseTexCoord.xy) * t_Weights.z;
-        return t_Sample;
+    // Weights should sum to 1.
+    vec3 t_Weights = v_TangentSpaceBasis2.xyz * v_TangentSpaceBasis2.xyz;
+    vec4 t_Sample = vec4(0.0);
+    t_Sample += texture(PU_SAMPLER_2D(t_Texture), t_BaseTexCoord.yz) * t_Weights.x;
+    t_Sample += texture(PU_SAMPLER_2D(t_Texture), t_BaseTexCoord.zx) * t_Weights.y;
+    t_Sample += texture(PU_SAMPLER_2D(t_Texture), t_BaseTexCoord.xy) * t_Weights.z;
+    return t_Sample;
+}
+
+vec4 SeamlessSampleTex(PD_SAMPLER_2D(t_Texture), in bool t_UseSeamless, in vec2 t_TexCoord) {
+    if (t_UseSeamless) {
+        return SeamlessSampleTex(PU_SAMPLER_2D(t_Texture), 1.0);
     } else {
         return texture(PU_SAMPLER_2D(t_Texture), t_TexCoord.xy);
     }
 }
 
 float CalcShadowPCF9(PD_SAMPLER_2DShadow(t_TextureDepth), in vec3 t_ProjCoord) {
-    float t_Res = 0.0f;
+    float t_Res = 0.0;
     t_Res += texture(PU_SAMPLER_2DShadow(t_TextureDepth), t_ProjCoord.xyz) * (1.0 / 9.0);
     t_Res += textureOffset(PU_SAMPLER_2DShadow(t_TextureDepth), t_ProjCoord.xyz, ivec2( 0,  1)) * (1.0 / 9.0);
     t_Res += textureOffset(PU_SAMPLER_2DShadow(t_TextureDepth), t_ProjCoord.xyz, ivec2( 0, -1)) * (1.0 / 9.0);
@@ -1649,17 +1763,17 @@ float CalcShadowPCF9(PD_SAMPLER_2DShadow(t_TextureDepth), in vec3 t_ProjCoord) {
 }
 
 float CalcShadowPCF5(PD_SAMPLER_2DShadow(t_TextureDepth), in vec3 t_ProjCoord) {
-    float t_Res = 0.0f;
-    t_Res += texture(PU_SAMPLER_2DShadow(t_TextureDepth), t_ProjCoord.xyz) * (1.0 / 5.0);
-    t_Res += textureOffset(PU_SAMPLER_2DShadow(t_TextureDepth), t_ProjCoord.xyz, ivec2( 0,  1)) * (1.0 / 5.0);
-    t_Res += textureOffset(PU_SAMPLER_2DShadow(t_TextureDepth), t_ProjCoord.xyz, ivec2( 0, -1)) * (1.0 / 5.0);
-    t_Res += textureOffset(PU_SAMPLER_2DShadow(t_TextureDepth), t_ProjCoord.xyz, ivec2( 1,  0)) * (1.0 / 5.0);
-    t_Res += textureOffset(PU_SAMPLER_2DShadow(t_TextureDepth), t_ProjCoord.xyz, ivec2(-1,  0)) * (1.0 / 5.0);
+    float t_Res = 0.0;
+    t_Res += textureLod(PU_SAMPLER_2DShadow(t_TextureDepth), t_ProjCoord.xyz, 0.0) * (1.0 / 5.0);
+    t_Res += textureLodOffset(PU_SAMPLER_2DShadow(t_TextureDepth), t_ProjCoord.xyz, 0.0, ivec2( 0,  1)) * (1.0 / 5.0);
+    t_Res += textureLodOffset(PU_SAMPLER_2DShadow(t_TextureDepth), t_ProjCoord.xyz, 0.0, ivec2( 0, -1)) * (1.0 / 5.0);
+    t_Res += textureLodOffset(PU_SAMPLER_2DShadow(t_TextureDepth), t_ProjCoord.xyz, 0.0, ivec2( 1,  0)) * (1.0 / 5.0);
+    t_Res += textureLodOffset(PU_SAMPLER_2DShadow(t_TextureDepth), t_ProjCoord.xyz, 0.0, ivec2(-1,  0)) * (1.0 / 5.0);
     return t_Res;
 }
 
 float CalcShadowPCF1(PD_SAMPLER_2DShadow(t_TextureDepth), in vec3 t_ProjCoord) {
-    return texture(PU_SAMPLER_2DShadow(t_TextureDepth), t_ProjCoord.xyz);
+    return textureLod(PU_SAMPLER_2DShadow(t_TextureDepth), t_ProjCoord.xyz, 0.0);
 }
 
 float CalcShadowPCF(PD_SAMPLER_2DShadow(t_TextureDepth), in vec3 t_ProjCoord, in float t_Bias) {
@@ -1670,7 +1784,8 @@ float CalcShadowPCF(PD_SAMPLER_2DShadow(t_TextureDepth), in vec3 t_ProjCoord, in
 void mainPS() {
     vec4 t_Albedo, t_BlendedAlpha;
 
-    vec4 t_BaseTexture = DebugColorTexture(SeamlessSampleTex(PP_SAMPLER_2D(u_TextureBase), v_TexCoord0.xy));
+    bool use_seamless_base = ${getDefineBool(m, `USE_SEAMLESS_BASE`)};
+    vec4 t_BaseTexture = DebugColorTexture(SeamlessSampleTex(PP_SAMPLER_2D(u_TextureBase), use_seamless_base, v_TexCoord0.xy));
 
     bool use_basetexture2 = ${getDefineBool(m, `USE_BASETEXTURE2`)};
 
@@ -1687,7 +1802,7 @@ void mainPS() {
 
     if (use_basetexture2) {
         // Blend in BaseTexture2 using blend factor.
-        vec4 t_BaseTexture2 = DebugColorTexture(SeamlessSampleTex(PP_SAMPLER_2D(u_TextureBase2), v_TexCoord0.xy));
+        vec4 t_BaseTexture2 = DebugColorTexture(SeamlessSampleTex(PP_SAMPLER_2D(u_TextureBase2), use_seamless_base, v_TexCoord0.xy));
         t_Albedo = mix(t_BaseTexture, t_BaseTexture2, t_BlendFactorWorld);
     } else {
         t_Albedo = t_BaseTexture;
@@ -1695,9 +1810,15 @@ void mainPS() {
 
     vec4 t_DetailTexture = vec4(0.0);
 
-#ifdef USE_DETAIL
-    vec2 t_DetailTexCoord = Mul(u_DetailTextureTransform, vec4(v_TexCoord0.xy, 1.0, 1.0));
-    t_DetailTexture = DebugColorTexture(texture(SAMPLER_2D(u_TextureDetail), t_DetailTexCoord));
+#if defined USE_DETAIL
+    bool use_seamless_detail = ${getDefineBool(m, `USE_SEAMLESS_DETAIL`)};
+    if (use_seamless_detail) {
+        float t_SeamlessDetailScale = u_DetailTextureTransform.mx.x;
+        t_DetailTexture = DebugColorTexture(SeamlessSampleTex(SAMPLER_2D(u_TextureDetail), t_SeamlessDetailScale));
+    } else {
+        vec2 t_DetailTexCoord = Mul(u_DetailTextureTransform, vec4(v_TexCoord0.zw, 1.0, 1.0));
+        t_DetailTexture = DebugColorTexture(texture(SAMPLER_2D(u_TextureDetail), t_DetailTexCoord));
+    }
     t_Albedo = CalcDetail(t_Albedo, t_DetailTexture);
 #endif
 
@@ -1715,7 +1836,7 @@ void mainPS() {
     vec3 t_BumpmapNormal;
 
     if (use_bumpmap) {
-        t_BumpmapSample = UnpackNormalMap(SeamlessSampleTex(PP_SAMPLER_2D(u_TextureBumpmap), t_BumpmapTexCoord.xy));
+        t_BumpmapSample = UnpackNormalMap(SeamlessSampleTex(PP_SAMPLER_2D(u_TextureBumpmap), use_seamless_base, t_BumpmapTexCoord.xy));
 
         bool use_bumpmap2 = ${getDefineBool(m, `USE_BUMPMAP2`)};
         if (use_bumpmap2) {
@@ -1748,7 +1869,7 @@ void mainPS() {
         }
 
         // Transform from tangent space into world-space.
-#ifdef HAS_FULL_TANGENTSPACE
+#if defined HAS_FULL_TANGENTSPACE
         t_NormalWorld = CalcTangentToWorld(t_BumpmapNormal, v_TangentSpaceBasis0, v_TangentSpaceBasis1, v_TangentSpaceBasis2);
 #endif
     } else {
@@ -1757,6 +1878,7 @@ void mainPS() {
 
     vec3 t_DiffuseLighting = vec3(0.0);
     vec3 t_SpecularLighting = vec3(0.0);
+    vec3 t_SpecularLightingEnvMap = vec3(0.0);
 
     bool use_lightmap = ${getDefineBool(m, `USE_LIGHTMAP`)};
     bool use_diffuse_bumpmap = ${getDefineBool(m, `USE_DIFFUSE_BUMPMAP`)};
@@ -1778,7 +1900,7 @@ void mainPS() {
                 // SSBUMP precomputes the elements of t_Influence (calculated below) offline.
                 t_Influence = t_BumpmapSample.rgb;
 
-                if (DETAIL_COMBINE_MODE == COMBINE_MODE_SSBUMP_BUMP) {
+                if (DETAIL_BLEND_MODE == DETAIL_BLEND_MODE_SSBUMP_BUMP) {
                     t_Influence.xyz *= mix(vec3(1.0), 2.0 * t_DetailTexture.rgb, t_BaseTexture.a);
                     t_Albedo.a = 1.0; // Reset alpha
                 }
@@ -1786,11 +1908,11 @@ void mainPS() {
                 bool use_ssbump_normalize = ${getDefineBool(m, `USE_SSBUMP_NORMALIZE`)};
                 t_NormalizeInfluence = use_ssbump_normalize;
             } else {
-                t_Influence.x = clamp(dot(t_BumpmapNormal, g_RNBasis0), 0.0, 1.0);
-                t_Influence.y = clamp(dot(t_BumpmapNormal, g_RNBasis1), 0.0, 1.0);
-                t_Influence.z = clamp(dot(t_BumpmapNormal, g_RNBasis2), 0.0, 1.0);
+                t_Influence.x = saturate(dot(t_BumpmapNormal, g_RNBasis0));
+                t_Influence.y = saturate(dot(t_BumpmapNormal, g_RNBasis1));
+                t_Influence.z = saturate(dot(t_BumpmapNormal, g_RNBasis2));
 
-                if (DETAIL_COMBINE_MODE == COMBINE_MODE_SSBUMP_BUMP) {
+                if (DETAIL_BLEND_MODE == DETAIL_BLEND_MODE_SSBUMP_BUMP) {
                     t_Influence.xyz *= t_DetailTexture.rgb * 2.0;
                 }
             }
@@ -1808,16 +1930,35 @@ void mainPS() {
         } else {
             t_DiffuseLighting.rgb = t_LightmapColor0;
         }
-
-        t_DiffuseLighting.rgb = t_DiffuseLighting.rgb * u_ModulationColor.xyz;
     } else {
-        // When not using a lightmap, diffuse lighting comes from vertex shader.
-        t_DiffuseLighting.rgb = v_DiffuseLighting.rgb;
+        bool use_static_vertex_lighting_3 = ${getDefineBool(m, `USE_STATIC_VERTEX_LIGHTING_3`)};
+        if (use_static_vertex_lighting_3) {
+#if defined USE_STATIC_VERTEX_LIGHTING_3
+            vec3 t_Influence;
+
+            if (false && use_bumpmap) {
+                t_Influence.x = clamp(dot(t_BumpmapNormal, g_RNBasis0), 0.0, 1.0);
+                t_Influence.y = clamp(dot(t_BumpmapNormal, g_RNBasis1), 0.0, 1.0);
+                t_Influence.z = clamp(dot(t_BumpmapNormal, g_RNBasis2), 0.0, 1.0);
+                t_Influence.xyz = normalize(t_Influence.xyz);
+            } else {
+                // No bumpmap, equal diffuse influence
+                t_Influence.xyz = vec3(1.0 / 3.0);
+            }
+
+            t_DiffuseLighting = vec3(0.0);
+            t_DiffuseLighting += v_DiffuseLighting0.rgb * t_Influence.x;
+            t_DiffuseLighting += v_DiffuseLighting1.rgb * t_Influence.y;
+            t_DiffuseLighting += v_DiffuseLighting2.rgb * t_Influence.z;
+#endif
+        } else {
+            t_DiffuseLighting.rgb = v_DiffuseLighting0.rgb;
+        }
     }
 
     t_Albedo *= v_Color;
 
-#ifdef USE_ALPHATEST
+#if defined USE_ALPHATEST
     if (t_Albedo.a < u_AlphaTestReference)
         discard;
 #endif
@@ -1825,7 +1966,7 @@ void mainPS() {
     bool use_half_lambert = ${getDefineBool(m, `USE_HALF_LAMBERT`)};
     bool use_phong = ${getDefineBool(m, `USE_PHONG`)};
 
-#ifdef USE_DYNAMIC_PIXEL_LIGHTING
+#if defined USE_DYNAMIC_PIXEL_LIGHTING
     // World Diffuse
     bool t_HalfLambert = use_half_lambert;
 
@@ -1841,7 +1982,7 @@ void mainPS() {
     t_DiffuseLightInput.HalfLambert = t_HalfLambert;
     t_DiffuseLighting.rgb += WorldLightCalcAllDiffuse(t_DiffuseLightInput);
 
-#ifdef USE_AMBIENT_CUBE
+#if defined USE_AMBIENT_CUBE
     t_DiffuseLighting.rgb += AmbientLight(t_NormalWorld.xyz);
 #endif
 #endif
@@ -1852,15 +1993,15 @@ void mainPS() {
     float t_FresnelDot = dot(t_NormalWorld, t_WorldDirectionToEye);
 
     float t_Fresnel;
-#ifdef USE_PHONG
-    t_Fresnel = CalcFresnelTerm2Ranges(t_FresnelDot, u_FresnelRangeSpecBoost.xyz);
+#if defined USE_PHONG
+    t_Fresnel = CalcFresnelTerm2Ranges(t_FresnelDot, u_FresnelRangeSpecAlbedoBoost.xyz);
 #else
     t_Fresnel = CalcFresnelTerm2(t_FresnelDot);
 #endif
 
     bool use_base_alpha_envmap_mask = ${getDefineBool(m, `USE_BASE_ALPHA_ENVMAP_MASK`)};
 
-#ifdef USE_ENVMAP
+#if defined USE_ENVMAP
     t_EnvmapFactor *= u_EnvmapTint.rgb;
 
     bool use_envmap_mask = ${getDefineBool(m, `USE_ENVMAP_MASK`)};
@@ -1886,7 +2027,7 @@ void mainPS() {
     t_EnvmapColor = mix(vec3(dot(vec3(0.299, 0.587, 0.114), t_EnvmapColor)), t_EnvmapColor, u_EnvmapContrastSaturationFresnelLightScale.y);
     t_EnvmapColor *= mix(t_Fresnel, 1.0, u_EnvmapContrastSaturationFresnelLightScale.z);
 
-    t_SpecularLighting.rgb += t_EnvmapColor.rgb;
+    t_SpecularLightingEnvMap.rgb += t_EnvmapColor.rgb;
 #endif
 
     // World Specular
@@ -1909,50 +2050,34 @@ void mainPS() {
         }
     }
 
-#ifdef USE_DYNAMIC_PIXEL_LIGHTING
+#if defined USE_DYNAMIC_PIXEL_LIGHTING
     if (use_phong) {
-        // Specular mask is either in base map or normal map alpha.
-        float t_SpecularMask;
-        bool use_base_alpha_phong_mask = ${getDefineBool(m, `USE_BASE_ALPHA_PHONG_MASK`)};
-        if (use_base_alpha_phong_mask) {
-            t_SpecularMask = t_BaseTexture.a;
-        } else if (use_bumpmap) {
-            t_SpecularMask = t_BumpmapSample.a;
-        } else {
-            t_SpecularMask = 1.0;
-        }
-
-        bool use_phong_mask_invert = ${getDefineBool(m, `USE_PHONG_MASK_INVERT`)};
-        if (use_phong_mask_invert)
-            t_SpecularMask = 1.0 - t_SpecularMask;
-
         SpecularLightResult t_SpecularLightResult = WorldLightCalcAllSpecular(t_SpecularLightInput);
         t_SpecularLighting.rgb += t_SpecularLightResult.SpecularLight;
-
-        // TODO(jstpierre): $phongtint, $phongalbedotint
-        t_SpecularLighting.rgb *= t_SpecularMask * u_FresnelRangeSpecBoost.w;
-
-        // TODO(jstpierre): $rimlight, $rimlightexponent, $rimlightboost, $rimmask
     }
 #endif // USE_DYNAMIC_PIXEL_LIGHTING
 
-#ifdef USE_PROJECTED_LIGHT
+#if defined USE_PROJECTED_LIGHT
     // Projected Light (Flashlight, env_projected_texture)
     vec4 t_ProjectedLightCoord = Mul(u_ProjectedLightFromWorldMatrix, vec4(v_PositionWorld.xyz, 1.0));
     t_ProjectedLightCoord.xyz /= t_ProjectedLightCoord.www;
 
     // Clip space is between -1 and 1. Move it into 0...1 space.
     t_ProjectedLightCoord.xy = t_ProjectedLightCoord.xy * 0.5 + 0.5;
-#ifndef GFX_CLIPSPACE_NEAR_ZERO
+#if !defined GFX_CLIPSPACE_NEAR_ZERO
     t_ProjectedLightCoord.z = t_ProjectedLightCoord.z * 0.5 + 0.5;
 #endif
 
+    vec4 t_ProjectedLightSample = texture(SAMPLER_2D(u_TextureProjectedLight), t_ProjectedLightCoord.xy);
     if (all(greaterThan(t_ProjectedLightCoord.xyz, vec3(0.0))) && all(lessThan(t_ProjectedLightCoord.xyz, vec3(1.0)))) {
         vec2 t_ProjectedGoboTexCoord = t_ProjectedLightCoord.xy;
-#ifndef GFX_VIEWPORT_ORIGIN_TL
+
+#if defined GFX_VIEWPORT_ORIGIN_TL
+        t_ProjectedLightCoord.y = 1.0 - t_ProjectedLightCoord.y;
+#else
         t_ProjectedGoboTexCoord.y = 1.0 - t_ProjectedGoboTexCoord.y;
 #endif
-        vec4 t_ProjectedLightSample = texture(SAMPLER_2D(u_TextureProjectedLight), t_ProjectedGoboTexCoord.xy);
+
         vec3 t_ProjectedLightColor = (t_ProjectedLightSample.rgb * u_ProjectedLightColor.rgb);
 
         vec3 t_WorldToProjectedLight = u_ProjectedLightOrigin.xyz - v_PositionWorld.xyz;
@@ -1981,10 +2106,51 @@ void mainPS() {
     }
 #endif
 
+    // Compute final specular
+#if defined USE_DYNAMIC_PIXEL_LIGHTING
+    if (use_phong) {
+        // Specular mask is either in base map or normal map alpha.
+        float t_SpecularMask;
+        bool use_base_alpha_phong_mask = ${getDefineBool(m, `USE_BASE_ALPHA_PHONG_MASK`)};
+        if (use_base_alpha_phong_mask) {
+            t_SpecularMask = t_BaseTexture.a;
+        } else if (use_bumpmap) {
+            t_SpecularMask = t_BumpmapSample.a;
+        } else {
+            t_SpecularMask = 1.0;
+        }
+
+        bool use_phong_mask_invert = ${getDefineBool(m, `USE_PHONG_MASK_INVERT`)};
+        if (use_phong_mask_invert)
+            t_SpecularMask = 1.0 - t_SpecularMask;
+
+        vec3 t_SpecularTint = vec3(u_SpecTintBoost.w);
+        bool use_phong_albedo_tint = ${getDefineBool(m, `USE_PHONG_ALBEDO_TINT`)};
+        if (use_phong_albedo_tint) {
+            t_SpecularTint.rgb = mix(t_SpecularTint.rgb, t_Albedo.rgb * u_FresnelRangeSpecAlbedoBoost.www, t_SpecularMapSample.ggg);
+        } else {
+            t_SpecularTint.rgb *= u_SpecTintBoost.rgb;
+        }
+
+        t_SpecularLighting.rgb *= t_SpecularTint.rgb * t_SpecularMask;
+
+        // TODO(jstpierre): $rimlight, $rimlightexponent, $rimlightboost, $rimmask
+    }
+#endif
+
+    vec3 t_DecalLighting = t_DiffuseLighting;
+
     vec3 t_FinalDiffuse = t_DiffuseLighting * t_Albedo.rgb;
+    t_FinalDiffuse.rgb = CalcDecal(t_FinalDiffuse.rgb, t_DecalLighting.rgb);
+
     t_FinalDiffuse = CalcDetailPostLighting(t_FinalDiffuse, t_DetailTexture.rgb);
 
-#ifdef USE_SELFILLUM
+    // TODO(jstpierre): Support $blendtintbybasealpha and $blendtintcoloroverbase
+    #if defined USE_MODULATIONCOLOR_COLOR
+        t_FinalDiffuse *= u_ModulationColor.rgb;
+    #endif
+
+#if defined USE_SELFILLUM
     vec3 t_SelfIllumMask;
 
     bool use_selfillum_envmapmask_alpha = ${getDefineBool(m, `USE_SELFILLUM_ENVMAPMASK_ALPHA`)};
@@ -2000,7 +2166,7 @@ void mainPS() {
 
     vec3 t_SelfIllum = u_SelfIllumTint.rgb * t_Albedo.rgb;
 
-#ifdef USE_SELFILLUM_FRESNEL
+#if defined USE_SELFILLUM_FRESNEL
     float t_SelfIllumFresnelMin = u_SelfIllumFresnel.r;
     float t_SelfIllumFresnelMax = u_SelfIllumFresnel.g;
     float t_SelfIllumFresnelExp = u_SelfIllumFresnel.b;
@@ -2014,8 +2180,9 @@ void mainPS() {
 
     t_FinalColor.rgb += t_FinalDiffuse;
 
-#ifndef DEBUG_DIFFUSEONLY
+#if !defined DEBUG_DIFFUSEONLY
     t_FinalColor.rgb += t_SpecularLighting.rgb;
+    t_FinalColor.rgb += t_SpecularLightingEnvMap.rgb;
 #endif
 
     t_FinalColor.a = t_Albedo.a;
@@ -2035,8 +2202,10 @@ const enum GenericShaderType {
 };
 
 class Material_Generic extends BaseMaterial {
+    private wantsTreeSway = false;
     private wantsDetail = false;
     private wantsBaseTexture2 = false;
+    private wantsDecal = false;
     private wantsBumpmap = false;
     private wantsBumpmap2 = false;
     private wantsEnvmapMask = false;
@@ -2046,11 +2215,11 @@ class Material_Generic extends BaseMaterial {
     private wantsBlendModulate = false;
     private wantsPhong = false;
     private wantsPhongExponentTexture = false;
-    private wantsStaticVertexLighting = false;
     private wantsDynamicLighting = false;
     private wantsAmbientCube = false;
     private wantsProjectedTexture = false;
     private shaderType: GenericShaderType;
+    private objectParamsWordCount: number = 0;
 
     private shaderInstance: UberShaderInstanceBasic;
     private gfxProgram: GfxProgram | null = null;
@@ -2059,21 +2228,26 @@ class Material_Generic extends BaseMaterial {
     private projectedLight: ProjectedLight | null = null;
 
     public override setStaticLightingMode(staticLightingMode: StaticLightingMode): void {
+        let wantsStaticVertexLighting: boolean;
         let wantsDynamicVertexLighting: boolean;
         let wantsDynamicPixelLighting: boolean;
 
+        const isStudioVertexLighting = (staticLightingMode === StaticLightingMode.StudioVertexLighting || staticLightingMode === StaticLightingMode.StudioVertexLighting3);
+        const isStudioVertexLighting3 = (staticLightingMode === StaticLightingMode.StudioVertexLighting3);
+        const isStudioAmbientCube = (staticLightingMode === StaticLightingMode.StudioAmbientCube);
+
         if (this.shaderType === GenericShaderType.VertexLitGeneric) {
-            this.wantsStaticVertexLighting = staticLightingMode === StaticLightingMode.StudioVertexLighting;
-            this.wantsAmbientCube = staticLightingMode === StaticLightingMode.StudioAmbientCube;
-            wantsDynamicVertexLighting = staticLightingMode === StaticLightingMode.StudioAmbientCube;
+            wantsStaticVertexLighting = isStudioVertexLighting;
+            this.wantsAmbientCube = isStudioAmbientCube;
+            wantsDynamicVertexLighting = isStudioAmbientCube;
             wantsDynamicPixelLighting = false;
         } else if (this.shaderType === GenericShaderType.Skin) {
-            this.wantsStaticVertexLighting = staticLightingMode === StaticLightingMode.StudioVertexLighting;
-            this.wantsAmbientCube = staticLightingMode === StaticLightingMode.StudioAmbientCube;
+            wantsStaticVertexLighting = isStudioVertexLighting;
+            this.wantsAmbientCube = isStudioAmbientCube;
             wantsDynamicVertexLighting = false;
             wantsDynamicPixelLighting = true;
         } else {
-            this.wantsStaticVertexLighting = false;
+            wantsStaticVertexLighting = false;
             this.wantsAmbientCube = false;
             wantsDynamicVertexLighting = false;
             wantsDynamicPixelLighting = false;
@@ -2082,12 +2256,13 @@ class Material_Generic extends BaseMaterial {
         this.wantsDynamicLighting = wantsDynamicVertexLighting || wantsDynamicPixelLighting;
 
         // Ensure that we never have a lightmap at the same time as "studio model" lighting, as they're exclusive...
-        if (this.wantsStaticVertexLighting || this.wantsDynamicLighting || this.wantsAmbientCube) {
+        if (wantsStaticVertexLighting || this.wantsDynamicLighting || this.wantsAmbientCube) {
             assert(!this.wantsLightmap);
         }
 
         let changed = false;
-        changed = this.shaderInstance.setDefineBool('USE_STATIC_VERTEX_LIGHTING', this.wantsStaticVertexLighting) || changed;
+        changed = this.shaderInstance.setDefineBool('USE_STATIC_VERTEX_LIGHTING', wantsStaticVertexLighting) || changed;
+        changed = this.shaderInstance.setDefineBool('USE_STATIC_VERTEX_LIGHTING_3', isStudioVertexLighting3) || changed;
         changed = this.shaderInstance.setDefineBool('USE_DYNAMIC_VERTEX_LIGHTING', wantsDynamicVertexLighting) || changed;
         changed = this.shaderInstance.setDefineBool('USE_DYNAMIC_PIXEL_LIGHTING', wantsDynamicPixelLighting) || changed;
         changed = this.shaderInstance.setDefineBool('USE_DYNAMIC_LIGHTING', this.wantsDynamicLighting) || changed;
@@ -2099,6 +2274,24 @@ class Material_Generic extends BaseMaterial {
 
     protected override initParameters(): void {
         super.initParameters();
+
+        const shaderTypeStr = this.vmt._Root.toLowerCase();
+        if (shaderTypeStr === 'lightmappedgeneric')
+            this.shaderType = GenericShaderType.LightmappedGeneric;
+        else if (shaderTypeStr === 'vertexlitgeneric')
+            this.shaderType = GenericShaderType.VertexLitGeneric;
+        else if (shaderTypeStr === 'unlitgeneric')
+            this.shaderType = GenericShaderType.UnlitGeneric;
+        else if (shaderTypeStr === 'worldvertextransition')
+            this.shaderType = GenericShaderType.WorldVertexTransition;
+        else if (shaderTypeStr === 'black')
+            this.shaderType = GenericShaderType.Black;
+        else if (shaderTypeStr === 'decalmodulate')
+            this.shaderType = GenericShaderType.DecalModulate;
+        else if (shaderTypeStr === 'sprite')
+            this.shaderType = GenericShaderType.Sprite;
+        else
+            this.shaderType = GenericShaderType.Unknown;
 
         const p = this.param;
 
@@ -2120,10 +2313,10 @@ class Material_Generic extends BaseMaterial {
         p['$detailtint']                   = new ParameterColor(1, 1, 1);
         p['$detailscale']                  = new ParameterNumber(4);
         p['$detailtexturetransform']       = new ParameterMatrix();
-        p['$bumpmap']                      = new ParameterTexture();
+        p['$bumpmap']                      = new ParameterTexture();             // Generic
         p['$bumpframe']                    = new ParameterNumber(0);
         p['$bumptransform']                = new ParameterMatrix();
-        p['$bumpmap2']                     = new ParameterTexture();
+        p['$bumpmap2']                     = new ParameterTexture();             // LightmappedGeneric, WorldVertexTransition
         p['$bumpframe2']                   = new ParameterNumber(0);
         p['$bumptransform2']               = new ParameterMatrix();
         p['$bumpmask']                     = new ParameterTexture();
@@ -2135,19 +2328,26 @@ class Material_Generic extends BaseMaterial {
         p['$selfillummask']                = new ParameterTexture(false, false);
         p['$selfillumfresnel']             = new ParameterBoolean(false, false);
         p['$selfillumfresnelminmaxexp']    = new ParameterVector(3);
+        p['$decaltexture']                 = new ParameterTexture();             // VertexLitGeneric, Phong
+        p['$decalblendmode']               = new ParameterNumber(-1, false);
 
         // World Vertex Transition
-        p['$basetexture2']                 = new ParameterTexture(true);
+        p['$basetexture2']                 = new ParameterTexture(true);         // WorldVertexTransition
         p['$frame2']                       = new ParameterNumber(0.0);
-        p['$blendmodulatetexture']         = new ParameterTexture(true);
+        p['$blendmodulatetexture']         = new ParameterTexture(true);         // WorldVertexTransition
         p['$blendmasktransform']           = new ParameterMatrix();
+        p['$seamless_base']                = new ParameterBoolean(false, false);
+        p['$seamless_detail']              = new ParameterBoolean(false, false);
         p['$seamless_scale']               = new ParameterNumber(0.0);
 
         // Phong (Skin)
         p['$phong']                        = new ParameterBoolean(false, false);
         p['$phongboost']                   = new ParameterNumber(1.0);
+        p['$phongtint']                    = new ParameterColor(1, 1, 1);
+        p['$phongalbedoboost']             = new ParameterNumber(1.0);
+        p['$phongalbedotint']              = new ParameterBoolean(false, false);
         p['$phongexponent']                = new ParameterNumber(5.0);
-        p['$phongexponenttexture']         = new ParameterTexture(false);
+        p['$phongexponenttexture']         = new ParameterTexture(false);       // Phong
         p['$phongexponentfactor']          = new ParameterNumber(149.0);
         p['$phongfresnelranges']           = new ParameterVector(3);
         p['$basemapalphaphongmask']        = new ParameterBoolean(false, false);
@@ -2156,6 +2356,24 @@ class Material_Generic extends BaseMaterial {
         // Sprite
         p['$spriteorientation']            = new ParameterString('parallel_upright');
         p['$spriteorigin']                 = new ParameterVector(2, [0.5, 0.5]);
+
+        // TreeSway (VertexLitGeneric)
+        p['$treesway']                     = new ParameterBoolean(false, false);
+        p['$treeswayheight']               = new ParameterNumber(1000.0);
+        p['$treeswaystartheight']          = new ParameterNumber(0.2);
+        p['$treeswayradius']               = new ParameterNumber(300.0);
+        p['$treeswaystartradius']          = new ParameterNumber(0.1);
+        p['$treeswayspeed']                = new ParameterNumber(1.0);
+        p['$treeswayspeedhighwindmultiplier'] = new ParameterNumber(2.0);
+        p['$treeswayspeedstrength']        = new ParameterNumber(10.0);
+        p['$treeswayspeedscrumblespeed']   = new ParameterNumber(0.1);
+        p['$treeswayspeedscrumblestrength'] = new ParameterNumber(0.1);
+        p['$treeswayspeedscrumblefrequency'] = new ParameterNumber(0.1);
+        p['$treeswayfalloffexp']           = new ParameterNumber(1.5);
+        p['$treeswayscrumblefalloffexp']   = new ParameterNumber(1.0);
+        p['$treeswayspeedlerpstart']       = new ParameterNumber(3.0);
+        p['$treeswayspeedlerpend']         = new ParameterNumber(6.0);
+        p['$treeswaystatic']               = new ParameterBoolean(false, false);
     }
 
     private recacheProgram(cache: GfxRenderCache): void {
@@ -2166,27 +2384,13 @@ class Material_Generic extends BaseMaterial {
     }
 
     protected override initStaticBeforeResourceFetch() {
-        const shaderTypeStr = this.vmt._Root.toLowerCase();
-        if (shaderTypeStr === 'lightmappedgeneric')
-            this.shaderType = GenericShaderType.LightmappedGeneric;
-        else if (shaderTypeStr === 'vertexlitgeneric')
-            this.shaderType = GenericShaderType.VertexLitGeneric;
-        else if (shaderTypeStr === 'unlitgeneric')
-            this.shaderType = GenericShaderType.UnlitGeneric;
-        else if (shaderTypeStr === 'worldvertextransition')
-            this.shaderType = GenericShaderType.WorldVertexTransition;
-        else if (shaderTypeStr === 'black')
-            this.shaderType = GenericShaderType.Black;
-        else if (shaderTypeStr === 'decalmodulate')
-            this.shaderType = GenericShaderType.DecalModulate;
-        else if (shaderTypeStr === 'sprite')
-            this.shaderType = GenericShaderType.Sprite;
-        else
-            this.shaderType = GenericShaderType.Unknown;
-
         // The detailBlendMode parameter determines whether we load an SRGB texture or not.
         const detailBlendMode = this.paramGetNumber('$detailblendmode');
         this.paramGetTexture('$detail').isSRGB = (detailBlendMode === 1);
+
+        // The detailBlendMode parameter determines whether we load an SRGB texture or not.
+        const decalBlendMode = this.paramGetNumber('$decalblendmode');
+        this.paramGetTexture('$decaltexture').isSRGB = (decalBlendMode === 0);
 
         // decalmodulate doesn't load basetexture as sRGB.
         if (this.shaderType === GenericShaderType.DecalModulate)
@@ -2204,6 +2408,21 @@ class Material_Generic extends BaseMaterial {
 
         this.shaderInstance = new UberShaderInstanceBasic(materialCache.shaderTemplates.Generic);
 
+        if (this.shaderType === GenericShaderType.LightmappedGeneric || this.shaderType === GenericShaderType.WorldVertexTransition) {
+            this.wantsLightmap = true;
+            this.shaderInstance.setDefineBool('USE_LIGHTMAP', true);
+        }
+
+        if (this.shaderType === GenericShaderType.WorldVertexTransition) {
+            this.wantsBaseTexture2 = true;
+            this.shaderInstance.setDefineBool('USE_BASETEXTURE2', true);
+        }
+
+        if (this.wantsBaseTexture2 && this.paramGetVTF('$blendmodulatetexture') !== null) {
+            this.wantsBlendModulate = true;
+            this.shaderInstance.setDefineBool('USE_BLEND_MODULATE', true);
+        }
+
         if (this.shaderType === GenericShaderType.VertexLitGeneric && this.paramGetBoolean('$phong')) {
             // $phong on a vertexlitgeneric tells it to use the Skin shader instead.
             this.shaderType = GenericShaderType.Skin;
@@ -2213,16 +2432,22 @@ class Material_Generic extends BaseMaterial {
             if (this.paramGetVTF('$phongexponenttexture') !== null) {
                 this.wantsPhongExponentTexture = true;
                 this.shaderInstance.setDefineBool('USE_PHONG_EXPONENT_TEXTURE', true);
+                this.shaderInstance.setDefineBool('USE_PHONG_ALBEDO_TINT', this.paramGetBoolean('$phongalbedotint'));
             }
+        }
+
+        if (this.paramGetBoolean('$treesway')) {
+            this.wantsTreeSway = true;
+            this.shaderInstance.setDefineBool('USE_TREE_SWAY', true);
         }
 
         if (this.paramGetVTF('$detail') !== null) {
             this.wantsDetail = true;
             this.shaderInstance.setDefineBool('USE_DETAIL', true);
             const detailBlendMode = this.paramGetNumber('$detailblendmode');
-            this.shaderInstance.setDefineString('DETAIL_COMBINE_MODE', '' + detailBlendMode);
+            this.shaderInstance.setDefineString('DETAIL_BLEND_MODE', '' + detailBlendMode);
         } else {
-            this.shaderInstance.setDefineString('DETAIL_COMBINE_MODE', '-1');
+            this.shaderInstance.setDefineString('DETAIL_BLEND_MODE', '-1');
         }
 
         if (this.paramGetVTF('$bumpmap') !== null) {
@@ -2239,6 +2464,16 @@ class Material_Generic extends BaseMaterial {
                 if (this.paramGetVTF('$bumpmask'))
                     this.shaderInstance.setDefineBool(`USE_BUMPMASK`, true);
             }
+        }
+
+        if (this.paramGetVTF('$decaltexture') !== null) {
+            assert(!this.wantsBaseTexture2); // Incompatible with decal
+            this.wantsDecal = true;
+            this.shaderInstance.setDefineBool('USE_DECAL', true);
+            const decalBlendMode = this.paramGetNumber('$decalblendmode');
+            this.shaderInstance.setDefineString('DECAL_BLEND_MODE', '' + decalBlendMode);
+        } else {
+            this.shaderInstance.setDefineString('DECAL_BLEND_MODE', '-1');
         }
 
         if (this.paramGetVTF('$envmapmask') !== null) {
@@ -2265,23 +2500,18 @@ class Material_Generic extends BaseMaterial {
             }
         }
 
-        if (this.shaderType === GenericShaderType.LightmappedGeneric || this.shaderType === GenericShaderType.WorldVertexTransition) {
-            this.wantsLightmap = true;
-            this.shaderInstance.setDefineBool('USE_LIGHTMAP', true);
+        // LightmappedGeneric uses only $seamless_scale to turn on seamless mode (for base), while the vertex has $seamless_base / $seamless_detail
+        if (this.paramGetBoolean('$seamless_base')) {
+            this.shaderInstance.setDefineBool('USE_SEAMLESS_BASE', true);
+            if (this.paramGetNumber('$seamless_scale') === 0.0)
+                this.paramSetNumber('$seamless_scale', 1.0);
+        } else if (this.paramGetBoolean('$seamless_detail')) {
+            this.shaderInstance.setDefineBool('USE_SEAMLESS_DETAIL', true);
+            if (this.paramGetNumber('$seamless_scale') === 0.0)
+                this.paramSetNumber('$seamless_scale', 1.0);
+        } else if (this.paramGetNumber('$seamless_scale') > 0.0 && this.shaderType === GenericShaderType.LightmappedGeneric) {
+            this.shaderInstance.setDefineBool('USE_SEAMLESS_BASE', true);
         }
-
-        if (this.shaderType === GenericShaderType.WorldVertexTransition) {
-            this.wantsBaseTexture2 = true;
-            this.shaderInstance.setDefineBool('USE_BASETEXTURE2', true);
-        }
-
-        if (this.wantsBaseTexture2 && this.paramGetVTF('$blendmodulatetexture') !== null) {
-            this.wantsBlendModulate = true;
-            this.shaderInstance.setDefineBool('USE_BLEND_MODULATE', true);
-        }
-    
-        if (this.paramGetNumber('$seamless_scale') > 0.0)
-            this.shaderInstance.setDefineBool('USE_SEAMLESS', true);
 
         // Modulation color is used differently between lightmapped and non-lightmapped.
         // In vertexlit / unlit, then the modulation color is multiplied in with the texture (and possibly blended).
@@ -2363,6 +2593,7 @@ class Material_Generic extends BaseMaterial {
         this.sortKeyBase = makeSortKey(sortLayer);
 
         this.recacheProgram(materialCache.cache);
+        this.calcObjectParamsWordCount();
     }
 
     private updateTextureMappings(dst: TextureMapping[], renderContext: SourceRenderContext, lightmapPageIndex: number | null): void {
@@ -2385,6 +2616,10 @@ class Material_Generic extends BaseMaterial {
         this.paramGetTexture('$bumpmap2').fillTextureMapping(dst[3], this.paramGetInt('$bumpframe2'));
         this.paramGetTexture('$bumpmask').fillTextureMapping(dst[4], 0);
         this.paramGetTexture('$detail').fillTextureMapping(dst[5], this.paramGetInt('$detailframe'));
+
+        if (this.wantsDecal)
+            this.paramGetTexture('$decaltexture').fillTextureMapping(dst[1], 0);
+
         this.paramGetTexture('$envmapmask').fillTextureMapping(dst[6], this.paramGetInt('$envmapmaskframe'));
         this.paramGetTexture('$phongexponenttexture').fillTextureMapping(dst[7], 0);
         this.paramGetTexture('$selfillummask').fillTextureMapping(dst[8], 0);
@@ -2419,6 +2654,41 @@ class Material_Generic extends BaseMaterial {
             this.gfxProgram = null;
     }
 
+    private calcObjectParamsWordCount(): void {
+        let vec4Count = 0;
+
+        if (this.wantsAmbientCube)
+            vec4Count += 6;
+        if (this.wantsDynamicLighting)
+            vec4Count += 4 * ShaderTemplate_Generic.MaxDynamicWorldLights;
+        vec4Count += 2;
+        if (this.wantsBumpmap)
+            vec4Count += 2;
+        if (this.wantsBumpmap2)
+            vec4Count += 2;
+        if (this.wantsDetail)
+            vec4Count += 2;
+        if (this.wantsEnvmapMask)
+            vec4Count += 1;
+        if (this.wantsBlendModulate)
+            vec4Count += 1;
+        if (this.wantsEnvmap)
+            vec4Count += 2;
+        if (this.wantsSelfIllum)
+            vec4Count += 1;
+        if (this.wantsSelfIllumFresnel)
+            vec4Count += 1;
+        if (this.wantsPhong)
+            vec4Count += 2;
+        if (this.wantsProjectedTexture)
+            vec4Count += 4 + 2;
+        if (this.wantsTreeSway)
+            vec4Count += 5;
+        vec4Count += 1; // Color
+        vec4Count += 1; // Misc
+        this.objectParamsWordCount = vec4Count * 4;
+    }
+
     public setOnRenderInst(renderContext: SourceRenderContext, renderInst: GfxRenderInst, lightmapPageIndex: number | null = null): void {
         // TODO(jstpierre): Special shader program for depth-only?
 
@@ -2427,8 +2697,10 @@ class Material_Generic extends BaseMaterial {
 
         this.setupOverrideSceneParams(renderContext, renderInst);
 
-        // TODO(jstpierre): Carve down this allocation a bit.
-        let offs = renderInst.allocateUniformBuffer(ShaderTemplate_Generic.ub_ObjectParams, 156);
+        if (this.gfxProgram === null)
+            this.calcObjectParamsWordCount();
+
+        let offs = renderInst.allocateUniformBuffer(ShaderTemplate_Generic.ub_ObjectParams, this.objectParamsWordCount);
         const d = renderInst.mapUniformBufferF32(ShaderTemplate_Generic.ub_ObjectParams);
 
         if (this.wantsAmbientCube) {
@@ -2483,7 +2755,8 @@ class Material_Generic extends BaseMaterial {
         if (this.wantsPhong) {
             const fresnelRanges = this.paramGetVector('$phongfresnelranges');
             const r0 = fresnelRanges.get(0), r1 = fresnelRanges.get(1), r2 = fresnelRanges.get(2);
-            offs += fillVec4(d, offs, r0, r1, r2, this.paramGetNumber('$phongboost'));
+            offs += fillVec4(d, offs, r0, r1, r2, this.paramGetNumber('$phongalbedoboost'));
+            offs += this.paramFillColor(d, offs, '$phongtint', this.paramGetNumber('$phongboost'));
         }
 
         if (this.wantsProjectedTexture) {
@@ -2493,6 +2766,37 @@ class Material_Generic extends BaseMaterial {
             colorScale(scratchColor, projectedLight.lightColor, projectedLight.lightColor.a * projectedLight.brightnessScale * 0.25);
             offs += fillColor(d, offs, scratchColor);
             offs += fillVec3v(d, offs, projectedLight.frustumView.cameraPos, projectedLight.farZ);
+        }
+
+        if (this.wantsTreeSway) {
+            const windDirX = 0.5, windDirY = 0.5;
+            const time = renderContext.globalTime;
+            offs += fillVec4(d, offs, windDirX, windDirY, time, this.paramGetNumber('$treeswayspeed'));
+
+            offs += fillVec4(d, offs,
+                this.paramGetNumber('$treeswayheight'),
+                this.paramGetNumber('$treeswaystartheight'),
+                this.paramGetNumber('$treeswayradius'),
+                this.paramGetNumber('$treeswaystartradius'),
+            );
+
+            offs += fillVec4(d, offs,
+                this.paramGetNumber('$treeswaystrength'),
+                this.paramGetNumber('$treeswayfalloffexp'),
+                this.paramGetNumber('$treeswayspeedhighwindmultiplier'),
+            );
+
+            offs += fillVec4(d, offs,
+                this.paramGetNumber('$treeswayscrumblestrength'),
+                this.paramGetNumber('$treeswayscrumblefalloffexp'),
+                this.paramGetNumber('$treeswayscrumblefrequency'),
+                this.paramGetNumber('$treeswayscrumblespeed'),
+            );
+
+            offs += fillVec4(d, offs,
+                this.paramGetNumber('$treeswayspeedlerpstart'),
+                this.paramGetNumber('$treeswayspeedlerpend'),
+            );
         }
 
         // Compute modulation color.
@@ -2544,18 +2848,18 @@ varying vec2 v_TexCoord0;
 // BaseTexture
 uniform sampler2D u_BaseTexture;
 
-#ifdef VERT
+#if defined VERT
 void mainVS() {
     Mat4x3 t_WorldFromLocalMatrix = CalcWorldFromLocalMatrix();
     vec3 t_PositionWorld = Mul(t_WorldFromLocalMatrix, vec4(a_Position, 1.0));
     v_PositionWorld.xyz = t_PositionWorld;
     gl_Position = Mul(u_ProjectionView, vec4(t_PositionWorld, 1.0));
 
-    v_TexCoord0.xy = Mul(u_BaseTextureTransform, vec4(a_TexCoord.xy, 1.0, 1.0));
+    v_TexCoord0.xy = Mul(u_BaseTextureTransform, vec4(a_TexCoord01.xy, 1.0, 1.0));
 }
 #endif
 
-#ifdef FRAG
+#if defined FRAG
 void mainPS() {
     vec4 t_BaseTextureSample = texture(SAMPLER_2D(u_BaseTexture), v_TexCoord0.xy);
     vec4 t_FinalColor = t_BaseTextureSample;
@@ -2659,19 +2963,19 @@ varying vec4 v_TexCoord0;
 uniform sampler2D u_Texture1;
 uniform sampler2D u_Texture2;
 
-#ifdef VERT
+#if defined VERT
 void mainVS() {
     Mat4x3 t_WorldFromLocalMatrix = CalcWorldFromLocalMatrix();
     vec3 t_PositionWorld = Mul(t_WorldFromLocalMatrix, vec4(a_Position, 1.0));
     v_PositionWorld.xyz = t_PositionWorld;
     gl_Position = Mul(u_ProjectionView, vec4(t_PositionWorld, 1.0));
 
-    v_TexCoord0.xy = Mul(u_Texture1Transform, vec4(a_TexCoord.xy, 1.0, 1.0));
-    v_TexCoord0.zw = Mul(u_Texture2Transform, vec4(a_TexCoord.xy, 1.0, 1.0));
+    v_TexCoord0.xy = Mul(u_Texture1Transform, vec4(a_TexCoord01.xy, 1.0, 1.0));
+    v_TexCoord0.zw = Mul(u_Texture2Transform, vec4(a_TexCoord01.xy, 1.0, 1.0));
 }
 #endif
 
-#ifdef FRAG
+#if defined FRAG
 void mainPS() {
     vec4 t_Texture1 = texture(SAMPLER_2D(u_Texture1), v_TexCoord0.xy);
     vec4 t_Texture2 = texture(SAMPLER_2D(u_Texture2), v_TexCoord0.zw);
@@ -2782,7 +3086,7 @@ ${MaterialShaderTemplateBase.Common}
 
 layout(std140) uniform ub_ObjectParams {
     vec4 u_BumpScaleBias;
-#ifdef USE_TEXSCROLL
+#if defined USE_TEXSCROLL
     vec4 u_TexScroll0ScaleBias;
     vec4 u_TexScroll1ScaleBias;
 #endif
@@ -2791,7 +3095,7 @@ layout(std140) uniform ub_ObjectParams {
     vec4 u_WaterFogColor;
     Mat4x4 u_ProjectedDepthToWorld;
 
-#ifdef USE_FLOWMAP
+#if defined USE_FLOWMAP
     vec4 u_BaseTextureScaleBias;
     vec4 u_Misc[3];
 #endif
@@ -2801,7 +3105,7 @@ layout(std140) uniform ub_ObjectParams {
 #define u_ReflectAmount (u_ReflectTint.a)
 #define u_WaterFogRange (u_WaterFogColor.a)
 
-#ifdef USE_FLOWMAP
+#if defined USE_FLOWMAP
 
 #define u_FlowTexCoordScale                (u_Misc[0].x)
 #define u_FlowNormalTexCoordScale          (u_Misc[0].y)
@@ -2835,9 +3139,9 @@ layout(binding = 5) uniform sampler2D u_TextureFlowNoise;
 
 layout(binding = 10) uniform sampler2DArray u_TextureLightmap;
 layout(binding = 11) uniform samplerCube u_TextureEnvmap;
-layout(binding = 12) uniform sampler2D u_TextureFramebufferDepth;
+layout(binding = 14) uniform sampler2D u_TextureFramebufferDepth;
 
-#ifdef VERT
+#if defined VERT
 void mainVS() {
     Mat4x3 t_WorldFromLocalMatrix = CalcWorldFromLocalMatrix();
     vec3 t_PositionWorld = Mul(t_WorldFromLocalMatrix, vec4(a_Position, 1.0));
@@ -2849,13 +3153,13 @@ void mainVS() {
     vec2 t_ProjTexCoord = (gl_Position.xy + gl_Position.w) * 0.5;
     v_TexCoord0.xyz = vec3(t_ProjTexCoord, gl_Position.w);
 
-    v_TexCoord1.xyzw = a_TexCoord.xyzw;
+    v_TexCoord1.xyzw = a_TexCoord01.xyzw;
 }
 #endif
 
-#ifdef FRAG
+#if defined FRAG
 vec2 SampleFramebufferCoord(vec2 t_TexCoord) {
-#ifdef GFX_VIEWPORT_ORIGIN_TL
+#if defined GFX_VIEWPORT_ORIGIN_TL
     t_TexCoord.y = 1.0 - t_TexCoord.y;
 #endif
     return t_TexCoord;
@@ -2874,7 +3178,7 @@ bool IsSomethingInFront(float t_DepthSample) {
 
 vec4 CalcPosClipFromViewport(vec3 t_PosViewport) {
     vec4 t_PosClip = vec4(t_PosViewport.xy * 2.0 - 1.0, t_PosViewport.z, 1.0);
-#ifndef GFX_CLIPSPACE_NEAR_ZERO
+#if !defined GFX_CLIPSPACE_NEAR_ZERO
     t_PosClip.z = t_PosClip.z * 2.0 - 1.0;
 #endif
     return t_PosClip;
@@ -2922,7 +3226,7 @@ void mainPS() {
 
     vec2 t_BumpmapCoord0 = CalcScaleBias(v_TexCoord1.xy, u_BumpScaleBias);
 
-#ifdef USE_FLOWMAP
+#if defined USE_FLOWMAP
 
     vec2 t_FlowTexCoord = t_BumpmapCoord0.xy * u_FlowTexCoordScale;
 
@@ -2946,7 +3250,7 @@ void mainPS() {
 
     // Sample our normal map with scroll offsets.
     vec4 t_BumpmapSample0 = texture(SAMPLER_2D(u_TextureNormalmap), t_BumpmapCoord0);
-#ifdef USE_TEXSCROLL
+#if defined USE_TEXSCROLL
     vec2 t_BumpmapCoord1 = CalcScaleBias(vec2(v_TexCoord1.x + v_TexCoord1.y, -v_TexCoord1.x + v_TexCoord1.y) * 0.1, u_TexScroll0ScaleBias);
     vec4 t_BumpmapSample1 = texture(SAMPLER_2D(u_TextureNormalmap), t_BumpmapCoord1);
     vec2 t_BumpmapCoord2 = CalcScaleBias(v_TexCoord1.yx * 0.45, u_TexScroll1ScaleBias);
@@ -2978,8 +3282,7 @@ void mainPS() {
 
     bool use_lightmap_water_fog = ${getDefineBool(m, `USE_LIGHTMAP_WATER_FOG`)};
     if (use_lightmap_water_fog) {
-        vec3 t_LightmapColor = texture(SAMPLER_2DArray(u_TextureLightmap), vec3(v_TexCoord1.zw, 0.0)).rgb;
-        t_LightmapColor.rgb *= g_LightmapScale;
+        vec3 t_LightmapColor = SampleLightmapTexture(texture(SAMPLER_2DArray(u_TextureLightmap), vec3(v_TexCoord1.zw, 0.0)));
         t_DiffuseLighting.rgb *= t_LightmapColor;
     }
     vec3 t_WaterFogColor = u_WaterFogColor.rgb * t_DiffuseLighting.rgb;
@@ -3041,7 +3344,7 @@ void mainPS() {
 
     vec4 t_FinalColor;
 
-#ifdef USE_FLOWMAP
+#if defined USE_FLOWMAP
     bool use_flowmap_basetexture = ${getDefineBool(m, `USE_FLOWMAP_BASETEXTURE`)};
     if (use_flowmap_basetexture) {
         // Parallax scum layer
@@ -3068,7 +3371,7 @@ void mainPS() {
 
     t_FinalColor.rgb = t_RefractColor.rgb + (t_ReflectColor.rgb * t_Fresnel);
 
-#ifdef USE_FLOWMAP
+#if defined USE_FLOWMAP
     t_FinalColor.a = u_WaterBlendFactor;
 #endif
 
@@ -3203,7 +3506,7 @@ class Material_Water extends BaseMaterial {
 
         renderContext.lightmapManager.fillTextureMapping(textureMappings[10], lightmapPageIndex);
         this.paramGetTexture('$envmap').fillTextureMapping(textureMappings[11], this.paramGetInt('$envmapframe'));
-        this.paramGetTexture('$depthtexture').fillTextureMapping(textureMappings[12], 0);
+        this.paramGetTexture('$depthtexture').fillTextureMapping(textureMappings[14], 0);
 
         let offs = renderInst.allocateUniformBuffer(ShaderTemplate_Water.ub_ObjectParams, 64);
         const d = renderInst.mapUniformBufferF32(ShaderTemplate_Water.ub_ObjectParams);
@@ -3287,7 +3590,7 @@ class Material_Water extends BaseMaterial {
         if (renderContext.currentView.viewType === SourceEngineViewType.WaterReflectView)
             return false;
 
-        return false;
+        return true;
     }
 }
 //#endregion
@@ -3305,11 +3608,11 @@ layout(std140) uniform ub_ObjectParams {
     vec4 u_BumpScaleBias;
     vec4 u_RefractTint;
     vec4 u_Misc[1];
-#ifdef USE_ENVMAP
+#if defined USE_ENVMAP
     vec4 u_EnvmapTint;
     vec4 u_EnvmapContrastSaturationFresnel;
 #endif
-#ifdef USE_VERTEX_MODULATE
+#if defined USE_VERTEX_MODULATE
     // XXX(jstpierre): ParticleSystem uses a uniform buffer until
     // we can switch it to using custom vertex data.
     vec4 u_FakeVertexModulate;
@@ -3325,7 +3628,7 @@ varying vec3 v_TexCoord0;
 varying vec2 v_TexCoord1;
 varying vec3 v_PositionWorld;
 
-#ifdef USE_VERTEX_MODULATE
+#if defined USE_VERTEX_MODULATE
 varying vec4 v_Modulate;
 #endif
 
@@ -3342,16 +3645,16 @@ layout(binding = 2) uniform sampler2D u_TextureRefractTint;
 // Envmap
 layout(binding = 11) uniform samplerCube u_TextureEnvmap;
 
-#ifdef VERT
+#if defined VERT
 void mainVS() {
     Mat4x3 t_WorldFromLocalMatrix = CalcWorldFromLocalMatrix();
     vec3 t_PositionWorld = Mul(t_WorldFromLocalMatrix, vec4(a_Position, 1.0));
     v_PositionWorld.xyz = t_PositionWorld;
     gl_Position = Mul(u_ProjectionView, vec4(t_PositionWorld, 1.0));
 
-    vec3 t_NormalWorld = Mul(t_WorldFromLocalMatrix, vec4(a_Normal.xyz, 0.0));
+    vec3 t_NormalWorld = normalize(Mul(t_WorldFromLocalMatrix, vec4(a_Normal.xyz, 0.0)));
 
-    vec3 t_TangentSWorld = Mul(t_WorldFromLocalMatrix, vec4(a_TangentS.xyz, 0.0));
+    vec3 t_TangentSWorld = normalize(Mul(t_WorldFromLocalMatrix, vec4(a_TangentS.xyz, 0.0)));
     vec3 t_TangentTWorld = cross(t_TangentSWorld, t_NormalWorld);
 
     v_TangentSpaceBasis0 = t_TangentSWorld * a_TangentS.w;
@@ -3362,15 +3665,15 @@ void mainVS() {
     vec2 t_ProjTexCoord = (gl_Position.xy + gl_Position.w) * 0.5;
     v_TexCoord0.xyz = vec3(t_ProjTexCoord, gl_Position.w);
 
-    v_TexCoord1.xy = CalcScaleBias(a_TexCoord.xy, u_BumpScaleBias);
-    
-#ifdef USE_VERTEX_MODULATE
+    v_TexCoord1.xy = CalcScaleBias(a_TexCoord01.xy, u_BumpScaleBias);
+
+#if defined USE_VERTEX_MODULATE
     v_Modulate.rgba = a_Color.rgba * u_FakeVertexModulate.rgba;
 #endif
 }
 #endif
 
-#ifdef FRAG
+#if defined FRAG
 void mainPS() {
     // Sample our normal map with scroll offsets.
     vec2 t_BumpmapCoord0 = v_TexCoord1.xy;
@@ -3380,16 +3683,16 @@ void mainPS() {
     vec4 t_FinalColor = vec4(0);
 
     vec3 t_RefractTint = u_RefractTint.rgb;
-#ifdef USE_REFRACT_TINT_TEXTURE
+#if defined USE_REFRACT_TINT_TEXTURE
     vec4 t_RefractTintTextureSample = texture(SAMPLER_2D(u_TextureRefractTint), t_BumpmapCoord0);
     t_RefractTint *= 2.0 * t_RefractTintTextureSample.rgb;
 #endif
 
-#ifdef USE_VERTEX_MODULATE
+#if defined USE_VERTEX_MODULATE
     t_RefractTint.rgb *= v_Modulate.rgb;
 #endif
 
-#ifdef USE_LOCAL_REFRACT
+#if defined USE_LOCAL_REFRACT
     vec3 t_LookDirWorld = u_CameraPosWorld.xyz - v_PositionWorld.xyz;
     // Get the tangent-space look direction to offset our texture.
     vec3 t_LookDirTangent = normalize(CalcWorldToTangent(t_LookDirWorld, v_TangentSpaceBasis0, v_TangentSpaceBasis1, v_TangentSpaceBasis2));
@@ -3423,7 +3726,7 @@ void mainPS() {
     vec2 t_ProjTexCoord = v_TexCoord0.xy / v_TexCoord0.z;
 
     float t_RefractAmount = u_RefractAmount;
-#ifdef USE_VERTEX_MODULATE
+#if defined USE_VERTEX_MODULATE
     t_RefractAmount *= v_Modulate.a;
 #endif
 
@@ -3440,7 +3743,7 @@ void mainPS() {
         for (int x = -g_BlurAmount; x <= g_BlurAmount; x++) {
             vec2 t_TexCoord = t_RefractTexCoord + vec2(t_BlurSampleOffset.x * float(x), t_BlurSampleOffset.y * float(y));
 
-#ifdef GFX_VIEWPORT_ORIGIN_TL
+#if defined GFX_VIEWPORT_ORIGIN_TL
             t_TexCoord.y = 1.0 - t_TexCoord.y;
 #endif
 
@@ -3451,7 +3754,7 @@ void mainPS() {
     t_FinalColor.rgb += t_BlurAccum.rgb * t_RefractTint.rgb;
 #endif
 
-#ifdef USE_ENVMAP
+#if defined USE_ENVMAP
     vec3 t_NormalWorld = CalcTangentToWorld(t_BumpmapNormal, v_TangentSpaceBasis0, v_TangentSpaceBasis1, v_TangentSpaceBasis2);
 
     vec3 t_PositionToEye = u_CameraPosWorld.xyz - v_PositionWorld.xyz;
@@ -3611,11 +3914,11 @@ ${MaterialShaderTemplateBase.Common}
 
 layout(std140) uniform ub_ObjectParams {
     Mat4x2 u_BaseTextureTransform;
-#ifdef USE_DETAIL
+#if defined USE_DETAIL
     Mat4x2 u_Detail1TextureTransform;
     Mat4x2 u_Detail2TextureTransform;
 #endif
-#ifdef USE_FLOWMAP
+#if defined USE_FLOWMAP
     vec4 u_Misc[3];
 #endif
 };
@@ -3643,37 +3946,37 @@ layout(binding = 3) uniform sampler2D u_TextureFlowmap;
 layout(binding = 4) uniform sampler2D u_TextureFlowNoise;
 layout(binding = 5) uniform sampler2D u_TextureFlowBounds;
 
-#ifdef VERT
+#if defined VERT
 void mainVS() {
     Mat4x3 t_WorldFromLocalMatrix = CalcWorldFromLocalMatrix();
     vec3 t_PositionWorld = Mul(t_WorldFromLocalMatrix, vec4(a_Position, 1.0));
     v_PositionWorld.xyz = t_PositionWorld;
     gl_Position = Mul(u_ProjectionView, vec4(t_PositionWorld, 1.0));
     v_PositionWorld.w = -gl_Position.z;
-#ifndef GFX_CLIPSPACE_NEAR_ZERO
+#if !defined GFX_CLIPSPACE_NEAR_ZERO
     v_PositionWorld.w = v_PositionWorld.w * 0.5 + 0.5;
 #endif
 
-    vec3 t_NormalWorld = Mul(t_WorldFromLocalMatrix, vec4(a_Normal.xyz, 0.0));
+    vec3 t_NormalWorld = normalize(Mul(t_WorldFromLocalMatrix, vec4(a_Normal.xyz, 0.0)));
 
-    vec3 t_TangentSWorld = Mul(t_WorldFromLocalMatrix, vec4(a_TangentS.xyz, 0.0));
+    vec3 t_TangentSWorld = normalize(Mul(t_WorldFromLocalMatrix, vec4(a_TangentS.xyz, 0.0)));
     vec3 t_TangentTWorld = cross(t_TangentSWorld, t_NormalWorld);
 
-    v_TexCoord0.xy = Mul(u_BaseTextureTransform, vec4(a_TexCoord.xy, 1.0, 1.0));
+    v_TexCoord0.xy = Mul(u_BaseTextureTransform, vec4(a_TexCoord01.xy, 1.0, 1.0));
     v_TexCoord0.zw = vec2(0.0);
 
     v_TexCoord1.xyzw = vec4(0.0);
 
-#ifdef USE_DETAIL
-    v_TexCoord1.xy = Mul(u_Detail1TextureTransform, vec4(a_TexCoord.xy, 1.0, 1.0));
-    v_TexCoord1.zw = Mul(u_Detail2TextureTransform, vec4(a_TexCoord.xy, 1.0, 1.0));
+#if defined USE_DETAIL
+    v_TexCoord1.xy = Mul(u_Detail1TextureTransform, vec4(a_TexCoord01.xy, 1.0, 1.0));
+    v_TexCoord1.zw = Mul(u_Detail2TextureTransform, vec4(a_TexCoord01.xy, 1.0, 1.0));
 #endif
 
-#ifdef USE_FLOWMAP
+#if defined USE_FLOWMAP
     vec2 t_FlowUV = vec2(0.0);
 
-#ifdef MODEL
-    t_FlowUV.xy = a_TexCoord.xy;
+#if defined MODEL
+    t_FlowUV.xy = a_TexCoord01.xy;
 #else
     t_FlowUV.x = dot(t_TangentSWorld.xyz, v_PositionWorld.xyz);
     t_FlowUV.y = dot(t_TangentTWorld.xyz, v_PositionWorld.xyz);
@@ -3690,12 +3993,12 @@ float CalcCameraFade(in float t_PosProjZ) {
     return smoothstep(0.0, 1.0, saturate(t_PosProjZ * 0.025));
 }
 
-#ifdef FRAG
+#if defined FRAG
 void mainPS() {
     vec4 t_BaseTexture = vec4(0.0, 0.0, 0.0, 1.0);
     bool t_UseBaseAlpha = true;
 
-#ifdef USE_FLOWMAP
+#if defined USE_FLOWMAP
     vec4 t_FlowBoundsSample = texture(SAMPLER_2D(u_TextureFlowBounds), v_TexCoord0.xy);
     vec4 t_FlowSample = texture(SAMPLER_2D(u_TextureFlowmap), v_TexCoord0.zw * u_FlowWorldTexCoordScale);
     vec2 t_FlowVectorTangent = UnpackUnsignedNormalMap(t_FlowSample).rg;
@@ -3725,7 +4028,7 @@ void mainPS() {
     vec4 t_FinalColor = t_BaseTexture;
     t_FinalColor.a = 1.0;
 
-#ifdef USE_DETAIL1
+#if defined USE_DETAIL1
     vec4 t_Detail1 = texture(SAMPLER_2D(u_TextureDetail1), v_TexCoord1.xy);
     int t_Detail1BlendMode = DETAIL1_BLENDMODE;
 
@@ -3739,12 +4042,12 @@ void mainPS() {
         t_UseBaseAlpha = false;
 #endif
 
-#ifdef USE_DETAIL2
+#if defined USE_DETAIL2
     vec4 t_Detail2 = texture(SAMPLER_2D(u_TextureDetail2), v_TexCoord1.zw);
     int t_Detail2BlendMode = DETAIL2_BLENDMODE;
 
     if (t_Detail2BlendMode == 0) {
-#ifdef USE_DETAIL1
+#if defined USE_DETAIL1
         t_Detail2.rgb *= t_Detail1.rgb;
 #endif
         t_FinalColor.rgb += t_Detail2.rgb;
@@ -3756,7 +4059,7 @@ void mainPS() {
     if (t_UseBaseAlpha)
         t_FinalColor.a *= t_BaseTexture.a;
 
-#ifdef ADDITIVE
+#if defined ADDITIVE
     t_FinalColor.rgb *= (1.0 + t_FinalColor.a);
     t_FinalColor.a = 1.0;
 #endif
@@ -3927,16 +4230,16 @@ varying vec2 v_TexCoord0;
 
 layout(binding = 0) uniform sampler2D u_Texture;
 
-#ifdef VERT
+#if defined VERT
 void mainVS() {
     Mat4x3 t_WorldFromLocalMatrix = CalcWorldFromLocalMatrix();
     vec3 t_PositionWorld = Mul(t_WorldFromLocalMatrix, vec4(a_Position, 1.0));
     gl_Position = Mul(u_ProjectionView, vec4(t_PositionWorld, 1.0));
-    v_TexCoord0.xy = Mul(u_BaseTextureTransform, vec4(a_TexCoord.xy, 0.0, 1.0));
+    v_TexCoord0.xy = Mul(u_BaseTextureTransform, vec4(a_TexCoord01.xy, 0.0, 1.0));
 }
 #endif
 
-#ifdef FRAG
+#if defined FRAG
 void mainPS() {
     vec4 t_FinalColor = texture(SAMPLER_2D(u_Texture), v_TexCoord0.xy);
 
@@ -3971,13 +4274,13 @@ varying vec2 v_TexCoordInPixels;
 
 layout(binding = 0) uniform sampler2D u_TextureHdrCompressed;
 
-#ifdef VERT
+#if defined VERT
 void mainVS() {
     Mat4x3 t_WorldFromLocalMatrix = CalcWorldFromLocalMatrix();
     vec3 t_PositionWorld = Mul(t_WorldFromLocalMatrix, vec4(a_Position, 1.0));
     gl_Position = Mul(u_ProjectionView, vec4(t_PositionWorld, 1.0));
 
-    vec2 t_TexCoord = Mul(u_BaseTextureTransform, vec4(a_TexCoord.xy, 0.0, 1.0));
+    vec2 t_TexCoord = Mul(u_BaseTextureTransform, vec4(a_TexCoord01.xy, 0.0, 1.0));
 
     v_TexCoord0.xy = t_TexCoord + vec2(-u_TexelXIncr, -u_TexelYIncr);
     v_TexCoord0.zw = t_TexCoord + vec2( u_TexelXIncr, -u_TexelYIncr);
@@ -3989,7 +4292,7 @@ void mainVS() {
 }
 #endif
 
-#ifdef FRAG
+#if defined FRAG
 void mainPS() {
     vec4 t_S00 = texture(SAMPLER_2D(u_TextureHdrCompressed), v_TexCoord0.xy);
     vec4 t_S01 = texture(SAMPLER_2D(u_TextureHdrCompressed), v_TexCoord0.zw);
@@ -4093,7 +4396,7 @@ class Material_Sky extends BaseMaterial {
             scratchColor.r *= 8.0;
             scratchColor.g *= 8.0;
             scratchColor.b *= 8.0;
-    
+
             offs += fillColor(d, offs, scratchColor);
         } else if (this.type === Material_Sky_Type.Sky) {
             let offs = renderInst.allocateUniformBuffer(ShaderTemplate_Sky.ub_ObjectParams, 12);
@@ -4137,22 +4440,22 @@ varying vec4 v_Misc;
 
 layout(binding = 0) uniform sampler2D u_Texture;
 
-#ifdef VERT
+#if defined VERT
 void mainVS() {
     Mat4x3 t_WorldFromLocalMatrix = CalcWorldFromLocalMatrix();
     vec3 t_PositionWorld = Mul(t_WorldFromLocalMatrix, vec4(a_Position, 1.0));
     gl_Position = Mul(u_ProjectionView, vec4(t_PositionWorld, 1.0));
-    v_TexCoord0.xy = CalcScaleBias(a_TexCoord.xy, u_BaseTextureScaleBias[0]);
-    v_TexCoord0.zw = CalcScaleBias(a_TexCoord.xy, u_BaseTextureScaleBias[1]);
-    v_TexCoord1.xy = CalcScaleBias(a_TexCoord.xy, u_BaseTextureScaleBias[2]);
-    v_TexCoord1.zw = CalcScaleBias(a_TexCoord.xy, u_BaseTextureScaleBias[3]);
+    v_TexCoord0.xy = CalcScaleBias(a_TexCoord01.xy, u_BaseTextureScaleBias[0]);
+    v_TexCoord0.zw = CalcScaleBias(a_TexCoord01.xy, u_BaseTextureScaleBias[1]);
+    v_TexCoord1.xy = CalcScaleBias(a_TexCoord01.xy, u_BaseTextureScaleBias[2]);
+    v_TexCoord1.zw = CalcScaleBias(a_TexCoord01.xy, u_BaseTextureScaleBias[3]);
     v_Color = u_Color;
     v_Misc.x = u_BlendFactor0;
     v_Misc.y = u_BlendFactor1;
 }
 #endif
 
-#ifdef FRAG
+#if defined FRAG
 float Lum(in vec3 t_Sample) {
     return dot(vec3(0.3, 0.59, 0.11), t_Sample.rgb);
 }
@@ -4195,12 +4498,12 @@ void mainPS() {
             t_Base1 = mix(t_Base10, t_Base11, t_BlendFactor1);
         }
 
-        int t_CombineMode = ${getDefineString(m, `DUAL_COMBINE_MODE`)};
-        if (t_CombineMode == 0) { // COMBINE_MODE_AVERAGE
+        int t_BlendMode = ${getDefineString(m, `DUAL_BLEND_MODE`)};
+        if (t_BlendMode == 0) { // DETAIL_BLEND_MODE_AVERAGE
             t_Base = (t_Base0 + t_Base1) * 0.5;
-        } else if (t_CombineMode == 1) { // COMBINE_MODE_USE_FIRST_AS_ALPHA_MASK_ON_SECOND
+        } else if (t_BlendMode == 1) { // DETAIL_BLEND_MODE_USE_FIRST_AS_ALPHA_MASK_ON_SECOND
             t_Base.rgb = t_Base1.rgb;
-        } else if (t_CombineMode == 2) { // COMBINE_MODE_USE_FIRST_OVER_SECOND
+        } else if (t_BlendMode == 2) { // DETAIL_BLEND_MODE_USE_FIRST_OVER_SECOND
             t_Base.rgb = mix(t_Base0.rgb, t_Base1.rgb, t_Base1.a);
         }
     }
@@ -4258,7 +4561,7 @@ class Material_SpriteCard extends BaseMaterial {
         this.shaderInstance.setDefineBool(`MAX_LUM_FRAMEBLEND_1`, this.paramGetBoolean(`$maxlumframeblend1`));
         this.shaderInstance.setDefineBool(`MAX_LUM_FRAMEBLEND_2`, this.paramGetBoolean(`$maxlumframeblend2`));
         this.shaderInstance.setDefineBool(`DUAL_SEQUENCE`, this.paramGetBoolean(`$dualsequence`));
-        this.shaderInstance.setDefineString(`DUAL_COMBINE_MODE`, '' + this.paramGetInt(`$sequence_blend_mode`));
+        this.shaderInstance.setDefineString(`DUAL_BLEND_MODE`, '' + this.paramGetInt(`$sequence_blend_mode`));
 
         // TODO(jstpierre): Additive modes
         let isAdditive = this.paramGetBoolean('$additive');
@@ -4314,9 +4617,9 @@ class StaticQuad {
 
     constructor(device: GfxDevice, cache: GfxRenderCache) {
         const vertexAttributeDescriptors: GfxVertexAttributeDescriptor[] = [
-            { location: MaterialShaderTemplateBase.a_Position, bufferIndex: 0, bufferByteOffset: 0*0x04, format: GfxFormat.F32_RGB, },
-            { location: MaterialShaderTemplateBase.a_TexCoord, bufferIndex: 0, bufferByteOffset: 3*0x04, format: GfxFormat.F32_RG, },
-            { location: MaterialShaderTemplateBase.a_Color,    bufferIndex: 0, bufferByteOffset: 5*0x04, format: GfxFormat.F32_RGBA, },
+            { location: MaterialShaderTemplateBase.a_Position,   bufferIndex: 0, bufferByteOffset: 0*0x04, format: GfxFormat.F32_RGB, },
+            { location: MaterialShaderTemplateBase.a_TexCoord01, bufferIndex: 0, bufferByteOffset: 3*0x04, format: GfxFormat.F32_RG, },
+            { location: MaterialShaderTemplateBase.a_Color,      bufferIndex: 0, bufferByteOffset: 5*0x04, format: GfxFormat.F32_RGBA, },
         ];
         const vertexBufferDescriptors: GfxInputLayoutBufferDescriptor[] = [
             { byteStride: (3+2+4)*0x04, frequency: GfxVertexBufferFrequency.PerVertex, },
@@ -4370,7 +4673,7 @@ class StaticResources {
         this.shadowSampler = cache.createSampler({
             minFilter: GfxTexFilterMode.Bilinear,
             magFilter: GfxTexFilterMode.Bilinear,
-            mipFilter: GfxMipFilterMode.NoMip,
+            mipFilter: GfxMipFilterMode.Nearest,
             wrapS: GfxWrapMode.Clamp,
             wrapT: GfxWrapMode.Clamp,
             compareMode: GfxCompareMode.Less,
@@ -4378,7 +4681,7 @@ class StaticResources {
         this.linearClampSampler = cache.createSampler({
             magFilter: GfxTexFilterMode.Bilinear,
             minFilter: GfxTexFilterMode.Bilinear,
-            mipFilter: GfxMipFilterMode.NoMip,
+            mipFilter: GfxMipFilterMode.Nearest,
             minLOD: 0,
             maxLOD: 100,
             wrapS: GfxWrapMode.Clamp,
@@ -4387,7 +4690,7 @@ class StaticResources {
         this.linearRepeatSampler = cache.createSampler({
             magFilter: GfxTexFilterMode.Bilinear,
             minFilter: GfxTexFilterMode.Bilinear,
-            mipFilter: GfxMipFilterMode.NoMip,
+            mipFilter: GfxMipFilterMode.Nearest,
             minLOD: 0,
             maxLOD: 100,
             wrapS: GfxWrapMode.Repeat,
@@ -4396,7 +4699,7 @@ class StaticResources {
         this.pointClampSampler = cache.createSampler({
             magFilter: GfxTexFilterMode.Point,
             minFilter: GfxTexFilterMode.Point,
-            mipFilter: GfxMipFilterMode.NoMip,
+            mipFilter: GfxMipFilterMode.Nearest,
             minLOD: 0,
             maxLOD: 100,
             wrapS: GfxWrapMode.Clamp,
@@ -4952,32 +5255,15 @@ export class LightCache {
 //#region Lightmap / Lighting data
 class LightmapPage {
     public gfxTexture: GfxTexture;
-    public data: Uint16Array | Float32Array | Uint8Array;
+    public data: Uint8Array;
     public uploadDirty = false;
-    public fixedPoint: number;
-    public max: number;
 
     constructor(device: GfxDevice, public page: LightmapPackerPage) {
         const width = this.page.width, height = this.page.height, numSlices = 4;
 
-        let pixelFormat: GfxFormat;
-        const lightmapScale = 16.0; // Needs to match g_LightmapScale in shader.
-        if (device.queryTextureFormatSupported(GfxFormat.U16_RGBA_NORM, width, height)) {
-            pixelFormat = GfxFormat.U16_RGBA_NORM;
-            this.max = 0xFFFF;
-            this.fixedPoint = (this.max + 1) / lightmapScale;
-            this.data = new Uint16Array(width * height * numSlices * 4);
-        } else if (device.queryTextureFormatSupported(GfxFormat.F32_RGBA, width, height)) {
-            pixelFormat = GfxFormat.F32_RGBA;
-            this.max = 1.0;
-            this.fixedPoint = this.max / lightmapScale;
-            this.data = new Float32Array(width * height * numSlices * 4);
-        } else {
-            pixelFormat = GfxFormat.U8_RGBA_NORM;
-            this.max = 0xFF;
-            this.fixedPoint = (this.max + 1) / lightmapScale;
-            this.data = new Uint8Array(width * height * numSlices * 4);
-        }
+        // RGBM seems to be good enough for all devices
+        const pixelFormat = GfxFormat.U8_RGBA_NORM;
+        this.data = new Uint8Array(width * height * numSlices * 4);
 
         this.gfxTexture = device.createTexture({
             dimension: GfxTextureDimension.n2DArray,
@@ -5026,7 +5312,7 @@ export class LightmapManager {
         this.gfxSampler = cache.createSampler({
             minFilter: GfxTexFilterMode.Bilinear,
             magFilter: GfxTexFilterMode.Bilinear,
-            mipFilter: GfxMipFilterMode.NoMip,
+            mipFilter: GfxMipFilterMode.Nearest,
             wrapS: GfxWrapMode.Clamp,
             wrapT: GfxWrapMode.Clamp,
         });
@@ -5091,24 +5377,34 @@ function gammaToLinear(v: number): number {
     return Math.pow(v, gamma);
 }
 
-function linearToFixedPoint(v: number, fixedPoint: number, max: number): number {
-    return clamp(v * fixedPoint, 0.0, max);
+function packRGBM(dst: Uint8Array, dstOffs: number, r: number, g: number, b: number): number {
+    const scale = 1.0 / RGBM_SCALE;
+    r = saturate(r * scale);
+    g = saturate(g * scale);
+    b = saturate(b * scale);
+
+    const mul = Math.ceil(saturate(Math.max(r, g, b, 1.0e-6)) * 255.0) / 255.0;
+    const m = 1.0 / mul;
+    r *= m;
+    g *= m;
+    b *= m;
+
+    dst[dstOffs++] = r * 0xFF;
+    dst[dstOffs++] = g * 0xFF;
+    dst[dstOffs++] = b * 0xFF;
+    dst[dstOffs++] = mul * 0xFF;
+    return 4;
 }
 
 function lightmapPackRuntime(dstPage: LightmapPage, location: Readonly<SurfaceLightmapData>, src: Float32Array, srcOffs: number): void {
     const dst = dstPage.data;
     const dstWidth = dstPage.page.width;
-    const fixedPoint = dstPage.fixedPoint, max = dstPage.max;
 
     for (let dstY = 0; dstY < location.height; dstY++) {
         for (let dstX = 0; dstX < location.width; dstX++) {
-            const sr = src[srcOffs++], sg = src[srcOffs++], sb = src[srcOffs++];
+            let sr = src[srcOffs++], sg = src[srcOffs++], sb = src[srcOffs++];
             let dstOffs = ((location.pagePosY + dstY) * dstWidth + location.pagePosX + dstX) * 4;
-
-            dst[dstOffs++] = linearToFixedPoint(sr, fixedPoint, max);
-            dst[dstOffs++] = linearToFixedPoint(sg, fixedPoint, max);
-            dst[dstOffs++] = linearToFixedPoint(sb, fixedPoint, max);
-            dstOffs++;
+            dstOffs += packRGBM(dst, dstOffs, sr, sg, sb);
         }
     }
 }
@@ -5116,16 +5412,11 @@ function lightmapPackRuntime(dstPage: LightmapPage, location: Readonly<SurfaceLi
 function lightmapPackRuntimeWhite(dstPage: LightmapPage, location: Readonly<SurfaceLightmapData>): void {
     const dst = dstPage.data;
     const dstWidth = dstPage.page.width;
-    const max = dstPage.max;
 
     for (let dstY = 0; dstY < location.height; dstY++) {
         for (let dstX = 0; dstX < location.width; dstX++) {
             let dstOffs = ((location.pagePosY + dstY) * dstWidth + location.pagePosX + dstX) * 4;
-
-            dst[dstOffs++] = max;
-            dst[dstOffs++] = max;
-            dst[dstOffs++] = max;
-            dstOffs++;
+            dstOffs += packRGBM(dst, dstOffs, 1.0, 1.0, 1.0);
         }
     }
 }
@@ -5136,7 +5427,6 @@ function lightmapPackRuntimeBumpmap(dstPage: LightmapPage, location: Readonly<Su
     const srcSize = srcTexelCount * 3;
     const dstWidth = dstPage.page.width, dstHeight = dstPage.page.height;
     const dstSize = dstWidth * dstHeight * 4;
-    const fixedPoint = dstPage.fixedPoint, max = dstPage.max;
 
     let srcOffs0 = srcOffs, srcOffs1 = srcOffs + srcSize * 1, srcOffs2 = srcOffs + srcSize * 2, srcOffs3 = srcOffs + srcSize * 3;
     for (let dstY = 0; dstY < location.height; dstY++) {
@@ -5147,41 +5437,27 @@ function lightmapPackRuntimeBumpmap(dstPage: LightmapPage, location: Readonly<Su
             const s0r = src[srcOffs0++], s0g = src[srcOffs0++], s0b = src[srcOffs0++];
 
             // Lightmap 0 is easy (unused tho).
-            dst[dstOffs0++] = linearToFixedPoint(s0r, fixedPoint, max);
-            dst[dstOffs0++] = linearToFixedPoint(s0g, fixedPoint, max);
-            dst[dstOffs0++] = linearToFixedPoint(s0b, fixedPoint, max);
-            dstOffs0++;
+            dstOffs0 += packRGBM(dst, dstOffs0, s0r, s0g, s0b);
 
             // Average the bumped colors to normalize (this math is very wrong, but it's what Valve appears to do)
             let s1r = src[srcOffs1++], s1g = src[srcOffs1++], s1b = src[srcOffs1++];
             let s2r = src[srcOffs2++], s2g = src[srcOffs2++], s2b = src[srcOffs2++];
             let s3r = src[srcOffs3++], s3g = src[srcOffs3++], s3b = src[srcOffs3++];
 
-            let rs = (s1r + s2r + s3r) / 3.0;
-            let rg = (s1g + s2g + s3g) / 3.0;
-            let rb = (s1b + s2b + s3b) / 3.0;
+            let sr = (s1r + s2r + s3r) / 3.0;
+            let sg = (s1g + s2g + s3g) / 3.0;
+            let sb = (s1b + s2b + s3b) / 3.0;
 
-            if (rs !== 0.0)
-                rs = s0r / rs;
-            if (rg !== 0.0)
-                rg = s0g / rg;
-            if (rb !== 0.0)
-                rb = s0b / rb;
+            if (sr !== 0.0)
+                sr = s0r / sr;
+            if (sg !== 0.0)
+                sg = s0g / sg;
+            if (sb !== 0.0)
+                sb = s0b / sb;
 
-            dst[dstOffs1++] = linearToFixedPoint(s1r * rs, fixedPoint, max);
-            dst[dstOffs1++] = linearToFixedPoint(s1g * rg, fixedPoint, max);
-            dst[dstOffs1++] = linearToFixedPoint(s1b * rb, fixedPoint, max);
-            dstOffs1++;
-
-            dst[dstOffs2++] = linearToFixedPoint(s2r * rs, fixedPoint, max);
-            dst[dstOffs2++] = linearToFixedPoint(s2g * rg, fixedPoint, max);
-            dst[dstOffs2++] = linearToFixedPoint(s2b * rb, fixedPoint, max);
-            dstOffs2++;
-
-            dst[dstOffs3++] = linearToFixedPoint(s3r * rs, fixedPoint, max);
-            dst[dstOffs3++] = linearToFixedPoint(s3g * rg, fixedPoint, max);
-            dst[dstOffs3++] = linearToFixedPoint(s3b * rb, fixedPoint, max);
-            dstOffs3++;
+            dstOffs1 += packRGBM(dst, dstOffs1, s1r * sr, s1g * sg, s1b * sb);
+            dstOffs2 += packRGBM(dst, dstOffs2, s2r * sr, s2g * sg, s2b * sb);
+            dstOffs3 += packRGBM(dst, dstOffs3, s3r * sr, s3g * sg, s3b * sb);
         }
     }
 }

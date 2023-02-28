@@ -48,14 +48,14 @@ import { getLayoutMessageDirect, MessageHolder } from './MessageData';
 import { ImageEffectSystemHolder, BloomEffect, BloomEffectSimple, DepthOfFieldBlur, ImageEffectAreaMgr } from './ImageEffect';
 import { ClipAreaDropHolder, ClipAreaHolder, FallOutFieldDraw } from './ClipArea';
 import { StageSwitchContainer, SleepControllerHolder, initSyncSleepController, SwitchWatcherHolder } from './Switch';
-import { AirBubbleHolder, WaterPlantDrawInit, TrapezeRopeDrawInit, SwingRopeGroup, ElectricRailHolder, PriorDrawAirHolder, CoinRotater, GalaxyNameSortTable, MiniatureGalaxyHolder, HeatHazeDirector, CoinHolder, SpinDriverPathDrawInit } from './Actors/MiscActor';
+import { AirBubbleHolder, WaterPlantDrawInit, TrapezeRopeDrawInit, SwingRopeGroup, ElectricRailHolder, PriorDrawAirHolder, CoinRotater, GalaxyNameSortTable, MiniatureGalaxyHolder, HeatHazeDirector, CoinHolder, SpinDriverPathDrawInit, GalaxyCometScreenFilter } from './Actors/MiscActor';
 import { NoclipLegacyActorSpawner } from './Actors/LegacyActor';
 import { StarPieceDirector, WaterPressureBulletHolder } from './Actors/MapObj';
 import { MapPartsRailGuideHolder } from './MapParts';
 import { LensFlareDirector, DrawSyncManager } from './Actors/LensFlare';
 import { NPCDirector } from './Actors/NPC';
 import { GalaxyMapController } from './Actors/GalaxyMap';
-import { TakoHeiInkHolder } from './Actors/Enemy';
+import { KameckBeamHolder, KameckBeamTurtleHolder, KameckFireBallHolder, TakoHeiInkHolder } from './Actors/Enemy';
 import { dfLabel, dfShow } from '../DebugFloaters';
 import { makeSolidColorTexture2D } from '../gfx/helpers/TextureHelpers';
 
@@ -91,7 +91,7 @@ class SpecialTextureBinder {
         this.clampSampler = cache.createSampler({
             magFilter: GfxTexFilterMode.Bilinear,
             minFilter: GfxTexFilterMode.Bilinear,
-            mipFilter: GfxMipFilterMode.NoMip,
+            mipFilter: GfxMipFilterMode.Nearest,
             maxLOD: 100,
             minLOD: 0,
             wrapS: GfxWrapMode.Clamp,
@@ -441,7 +441,10 @@ export class SMGRenderer implements Viewer.SceneGfx {
             pass.attachRenderTargetID(GfxrAttachmentSlot.Color0, mainColorTargetID);
             pass.attachRenderTargetID(GfxrAttachmentSlot.DepthStencil, mainDepthTargetID);
             pass.exec((passRenderer) => {
+                // TODO(jstpierre): The game puts this in the Skybox pass? Verify that we're doing this correctly here...
                 sceneObjHolder.specialTextureBinder.lateBindTexture(SpecialTextureType.OpaqueSceneTexture, this.mainColorTemporalTexture.getTextureForSampling());
+                this.drawOpa(passRenderer, DrawBufferType.CrystalItem);
+                this.drawXlu(passRenderer, DrawBufferType.CrystalItem);
                 this.drawOpa(passRenderer, DrawBufferType.Crystal);
                 this.drawXlu(passRenderer, DrawBufferType.Crystal);
 
@@ -674,6 +677,7 @@ export class SMGRenderer implements Viewer.SceneGfx {
                 // exceuteDrawList2DNormal()
                 this.drawOpa(passRenderer, DrawBufferType.Model3DFor2D);
                 this.drawXlu(passRenderer, DrawBufferType.Model3DFor2D);
+                this.execute(passRenderer, DrawType.CometScreenFilter);
                 this.execute(passRenderer, DrawType.Layout);
             });
         });
@@ -899,14 +903,20 @@ export class ModelCache {
 class ScenarioData {
     public zoneNames: string[];
     public scenarioDataIter: JMapInfoIter;
+    public hasCometData: boolean;
 
-    constructor(private scenarioArc: RARC.JKRArchive) {
+    constructor(sceneDesc: SMGSceneDescBase, scenarioArc: RARC.JKRArchive) {
         const zoneListIter = createCsvParser(scenarioArc.findFileData('ZoneList.bcsv')!);
         this.zoneNames = zoneListIter.mapRecords((iter) => {
             return assertExists(iter.getValueString(`ZoneName`));
         });
 
         this.scenarioDataIter = createCsvParser(scenarioArc.findFileData('ScenarioData.bcsv')!);
+
+        const hasCometData = sceneDesc.gameBit === GameBits.SMG1
+        this.hasCometData = hasCometData && this.scenarioDataIter.findRecord((iter) => {
+            return iter.getValueString('Comet') !== null;
+        });
     }
 
     public getMasterZoneFilename(): string {
@@ -1071,6 +1081,7 @@ export const enum SceneObj {
 
     // Noclip additions
     GalaxyNameSortTable            = 0xA0,
+    GalaxyCometScreenFilter        = 0xA1, // technically part of EventDirector, punting on that for now
 }
 
 class DebugUtils {
@@ -1115,6 +1126,9 @@ export class SceneObjHolder {
     public coinRotater: CoinRotater | null = null;
     public airBubbleHolder: AirBubbleHolder | null = null;
     public starPieceDirector: StarPieceDirector | null = null;
+    public kameckBeamHolder: KameckBeamHolder | null = null;
+    public kameckFireBallHolder: KameckFireBallHolder | null = null;
+    public kameckBeamTurtleHolder: KameckBeamTurtleHolder | null = null;
     public takoHeiInkHolder: TakoHeiInkHolder | null = null;
     public shadowControllerHolder: ShadowControllerHolder | null = null;
     public swingRopeGroup: SwingRopeGroup | null = null;
@@ -1135,6 +1149,7 @@ export class SceneObjHolder {
 
     // noclip additions -- some of these are singletons in the original game.
     public galaxyNameSortTable: GalaxyNameSortTable | null = null;
+    public galaxyCometScreenFilter: GalaxyCometScreenFilter | null = null;
 
     // Other singletons that are not SceneObjHolder.
     public drawSyncManager = new DrawSyncManager();
@@ -1205,6 +1220,12 @@ export class SceneObjHolder {
             return this.airBubbleHolder;
         else if (sceneObj === SceneObj.StarPieceDirector)
             return this.starPieceDirector;
+        else if (sceneObj === SceneObj.KameckBeamHolder)
+            return this.kameckBeamHolder;
+        else if (sceneObj === SceneObj.KameckFireBallHolder)
+            return this.kameckFireBallHolder;
+        else if (sceneObj === SceneObj.KameckBeamTurtleHolder)
+            return this.kameckBeamTurtleHolder;
         else if (sceneObj === SceneObj.TakoHeiInkHolder)
             return this.takoHeiInkHolder;
         else if (sceneObj === SceneObj.ShadowControllerHolder)
@@ -1241,6 +1262,8 @@ export class SceneObjHolder {
             return this.galaxyMapController;
         else if (sceneObj === SceneObj.GalaxyNameSortTable)
             return this.galaxyNameSortTable;
+        else if (sceneObj === SceneObj.GalaxyCometScreenFilter)
+            return this.galaxyCometScreenFilter;
         return null;
     }
 
@@ -1291,6 +1314,12 @@ export class SceneObjHolder {
             this.airBubbleHolder = new AirBubbleHolder(this);
         else if (sceneObj === SceneObj.StarPieceDirector)
             this.starPieceDirector = new StarPieceDirector(this);
+        else if (sceneObj === SceneObj.KameckBeamHolder)
+            this.kameckBeamHolder = new KameckBeamHolder(this);
+        else if (sceneObj === SceneObj.KameckFireBallHolder)
+            this.kameckFireBallHolder = new KameckFireBallHolder(this);
+        else if (sceneObj === SceneObj.KameckBeamTurtleHolder)
+            this.kameckBeamTurtleHolder = new KameckBeamTurtleHolder(this);
         else if (sceneObj === SceneObj.TakoHeiInkHolder)
             this.takoHeiInkHolder = new TakoHeiInkHolder(this);
         else if (sceneObj === SceneObj.ShadowControllerHolder)
@@ -1327,6 +1356,8 @@ export class SceneObjHolder {
             this.galaxyMapController = new GalaxyMapController(this);
         else if (sceneObj === SceneObj.GalaxyNameSortTable)
             this.galaxyNameSortTable = new GalaxyNameSortTable(this);
+        else if (sceneObj === SceneObj.GalaxyCometScreenFilter)
+            this.galaxyCometScreenFilter = new GalaxyCometScreenFilter(this);
     }
 
     public requestArchives(): void {
@@ -1766,12 +1797,14 @@ export abstract class SMGSceneDescBase implements Viewer.SceneDesc {
 
         await modelCache.waitForLoad();
 
-        const scenarioData = new ScenarioData(modelCache.getArchive(scenarioDataFilename)!);
-        for (let i = 0; i < scenarioData.zoneNames.length; i++) {
-            const zoneName = scenarioData.zoneNames[i];
+        sceneObjHolder.scenarioData = new ScenarioData(this, modelCache.getArchive(scenarioDataFilename)!);
+        for (let i = 0; i < sceneObjHolder.scenarioData.zoneNames.length; i++) {
+            const zoneName = sceneObjHolder.scenarioData.zoneNames[i];
             this.requestZoneArchives(modelCache, zoneName);
         }
-        sceneObjHolder.scenarioData = scenarioData;
+
+        if (sceneObjHolder.scenarioData.hasCometData)
+            GalaxyCometScreenFilter.requestArchives(sceneObjHolder);
 
         await modelCache.waitForLoad();
 
@@ -1785,6 +1818,9 @@ export abstract class SMGSceneDescBase implements Viewer.SceneDesc {
 
         sceneObjHolder.create(SceneObj.EffectSystem);
         sceneObjHolder.create(SceneObj.StarPieceDirector);
+
+        if (sceneObjHolder.scenarioData.hasCometData)
+            sceneObjHolder.create(SceneObj.GalaxyCometScreenFilter);
 
         const spawner = new SMGSpawner(sceneObjHolder);
         sceneObjHolder.spawner = spawner;

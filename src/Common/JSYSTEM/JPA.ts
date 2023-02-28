@@ -465,7 +465,7 @@ export class JPACData {
                 minFilter: GX.TexFilter.LINEAR,
                 magFilter: GX.TexFilter.LINEAR,
                 data: new ArrayBufferSlice(imgData.buffer),
-                lodBias: 0, minLOD: 0, maxLOD: 100, mipCount: 1,
+                lodBias: 0, minLOD: 0, maxLOD: 100, mipCount: 1, maxAnisotropy: GX.Anisotropy._1,
                 paletteData: null,
                 paletteFormat: GX.TexPalette.IA8,
             };
@@ -972,8 +972,8 @@ export class JPAEmitterWorkData {
 }
 
 export class JPADrawInfo {
-    public posCamMtx: mat4;
-    public texPrjMtx: mat4 | null = null;
+    public posCamMtx: ReadonlyMat4;
+    public texPrjMtx: ReadonlyMat4 | null = null;
     public frustum: Frustum | null = null;
 }
 
@@ -3844,12 +3844,12 @@ function parseResource_JEFFjpa1(res: JPAResourceRaw): JPAResource {
             const indTextureMode: IndTextureMode = view.getUint8(tableIdx + 0x10);
             const indTextureMtxID = view.getUint8(tableIdx + 0x11);
 
-            const p00 = JPAConvertFixToFloat(view.getFloat32(tableIdx + 0x12));
-            const p01 = JPAConvertFixToFloat(view.getFloat32(tableIdx + 0x14));
-            const p02 = JPAConvertFixToFloat(view.getFloat32(tableIdx + 0x16));
-            const p10 = JPAConvertFixToFloat(view.getFloat32(tableIdx + 0x18));
-            const p11 = JPAConvertFixToFloat(view.getFloat32(tableIdx + 0x1A));
-            const p12 = JPAConvertFixToFloat(view.getFloat32(tableIdx + 0x1C));
+            const p00 = JPAConvertFixToFloat(view.getInt16(tableIdx + 0x12));
+            const p01 = JPAConvertFixToFloat(view.getInt16(tableIdx + 0x14));
+            const p02 = JPAConvertFixToFloat(view.getInt16(tableIdx + 0x16));
+            const p10 = JPAConvertFixToFloat(view.getInt16(tableIdx + 0x18));
+            const p11 = JPAConvertFixToFloat(view.getInt16(tableIdx + 0x1A));
+            const p12 = JPAConvertFixToFloat(view.getInt16(tableIdx + 0x1C));
             const scale = Math.pow(2, view.getInt8(tableIdx + 0x1E));
             const indTextureMtx = new Float32Array([
                 p00*scale, p01*scale, p02*scale, scale,

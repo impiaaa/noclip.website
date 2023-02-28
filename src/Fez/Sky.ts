@@ -77,7 +77,7 @@ export class SkyData {
     public shadowsTextureMapping: TextureMapping[] = nArray(1, () => new TextureMapping());
 
     constructor(device: GfxDevice, cache: GfxRenderCache, public name: string, backgroundImage: XNA_Texture2D, starsImage: XNA_Texture2D | null, shadowsImage: XNA_Texture2D | null) {
-        this.backgroundProgram = device.createProgram(new SkyBackgroundProgram());
+        this.backgroundProgram = cache.createProgram(new SkyBackgroundProgram());
 
         this.backgroundTexture = makeTextureFromXNA_Texture2D(device, backgroundImage);
         this.backgroundTextureMapping[0].gfxTexture = this.backgroundTexture;
@@ -86,7 +86,7 @@ export class SkyData {
             wrapT: GfxWrapMode.Clamp,
             minFilter: GfxTexFilterMode.Bilinear,
             magFilter: GfxTexFilterMode.Bilinear,
-            mipFilter: GfxMipFilterMode.NoMip,
+            mipFilter: GfxMipFilterMode.Nearest,
             minLOD: 0, maxLOD: 0,
         });
 
@@ -97,7 +97,7 @@ export class SkyData {
             wrapT: GfxWrapMode.Repeat,
             minFilter: GfxTexFilterMode.Bilinear,
             magFilter: GfxTexFilterMode.Bilinear,
-            mipFilter: GfxMipFilterMode.NoMip,
+            mipFilter: GfxMipFilterMode.Nearest,
             minLOD: 0, maxLOD: 0,
         });
 
@@ -108,7 +108,7 @@ export class SkyData {
             wrapT: GfxWrapMode.Repeat,
             minFilter: GfxTexFilterMode.Bilinear,
             magFilter: GfxTexFilterMode.Bilinear,
-            mipFilter: GfxMipFilterMode.NoMip,
+            mipFilter: GfxMipFilterMode.Nearest,
             minLOD: 0, maxLOD: 0,
         });
     }
