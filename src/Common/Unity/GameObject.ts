@@ -2,16 +2,17 @@
 import type { UnityObject } from "../../../rust/pkg/index";
 import { GfxCullMode, GfxDevice } from "../../gfx/platform/GfxPlatform";
 import { SceneContext } from "../../SceneBase";
-import { AssetObjectData, UnityAssetSystem, RustModule, AssetLocation, UnityMeshData, UnityChannel, UnityMaterialData, UnityAssetResourceType } from "./AssetManager";
+import { AssetObjectData, UnityAssetSystem, RustModule, AssetLocation, UnityMeshData, UnityChannel, UnityMaterialData, UnityAssetResourceType, AssetFile } from "./AssetManager";
 import type * as wasm from '../../../rust/pkg/index';
 import { mat4, quat, vec3, vec4 } from "gl-matrix";
-import { assert, assertExists, fallbackUndefined, nArray } from "../../util";
+import { assert, assertExists, fallbackUndefined, nArray, readString } from "../../util";
 import { GfxRenderInst, GfxRenderInstManager } from "../../gfx/render/GfxRenderInstManager";
 import { ViewerRenderInput } from "../../viewer";
 import { DeviceProgram } from "../../Program";
 import { fillColor, fillMatrix4x3, fillVec4, fillVec4v } from "../../gfx/helpers/UniformBufferHelpers";
 import { GfxShaderLibrary } from "../../gfx/helpers/GfxShaderLibrary";
 import { TextureMapping } from "../../TextureHolder";
+import ArrayBufferSlice from '../../ArrayBufferSlice';
 
 interface WasmBindgenArray<T> {
     length: number;
@@ -122,6 +123,7 @@ layout(std140) uniform ub_ShapeParams {
 layout(location = ${UnityChannel.Vertex}) attribute vec3 a_Position;
 layout(location = ${UnityChannel.Normal}) attribute vec3 a_Normal;
 layout(location = ${UnityChannel.Tangent}) attribute vec3 a_Tangent;
+layout(location = ${UnityChannel.Color}) attribute vec4 a_Color;
 layout(location = ${UnityChannel.TexCoord0}) attribute vec2 a_TexCoord0;
 layout(location = ${UnityChannel.TexCoord1}) attribute vec2 a_TexCoord1;
 layout(location = ${UnityChannel.TexCoord2}) attribute vec2 a_TexCoord2;
@@ -130,8 +132,8 @@ layout(location = ${UnityChannel.TexCoord4}) attribute vec2 a_TexCoord4;
 layout(location = ${UnityChannel.TexCoord5}) attribute vec2 a_TexCoord5;
 layout(location = ${UnityChannel.TexCoord6}) attribute vec2 a_TexCoord6;
 layout(location = ${UnityChannel.TexCoord7}) attribute vec2 a_TexCoord7;
-layout(location = ${UnityChannel.BlendIndices}) attribute vec4 a_BlendIndices;
 layout(location = ${UnityChannel.BlendWeight}) attribute vec4 a_BlendWeight;
+layout(location = ${UnityChannel.BlendIndices}) attribute vec4 a_BlendIndices;
 
 ${GfxShaderLibrary.MulNormalMatrix}
 ${GfxShaderLibrary.CalcScaleBias}
@@ -346,7 +348,25 @@ export class UnityRuntime {
     public async loadLevel(filename: string) {
         const assetFile = this.assetSystem.fetchAssetFile(filename, false);
         await assetFile.waitForHeader();
-
+        return this.loadAsset(assetFile);
+    }
+    
+    public async loadBuffer(buffer: ArrayBufferSlice): Promise<void> {
+        if (readString(buffer, 0, 8) == "UnityFS") {
+            const assetFiles = this.assetSystem.fetchBundleBuffer(buffer);
+            const promises = Array<Promise<void>>(assetFiles.length);
+            for (let i = 0; i < assetFiles.length; i++) {
+                promises[i] = this.loadAsset(assetFiles[i]);
+            }
+            await Promise.all(promises);
+        }
+        else {
+            const assetFile = this.assetSystem.fetchAssetBuffer("<buffer>", buffer);
+            await this.loadAsset(assetFile);
+        }
+    }
+    
+    private async loadAsset(assetFile: AssetFile): Promise<void> {
         // Instantiate all the GameObjects.
         const loadGameObject = async (unityObject: UnityObject) => {
             const pathID = unityObject.path_id;
@@ -378,8 +398,8 @@ export class UnityRuntime {
         await this.assetSystem.waitForLoad();
 
         this.rootGameObjects = this.gameObjects.filter((obj) => {
-            const transform = assertExists(obj.getComponent(Transform));
-            return transform.parent === null;
+            const transform = obj.getComponent(Transform);
+            return transform && transform.parent === null;
         });
 
         for (let i = 0; i < this.rootGameObjects.length; i++)

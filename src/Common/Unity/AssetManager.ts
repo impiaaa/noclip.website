@@ -3,7 +3,7 @@ import { makeStaticDataBuffer } from '../../gfx/helpers/BufferHelpers';
 import type { AssetInfo, Mesh, AABB as UnityAABB, VertexFormat, UnityStreamingInfo, ChannelInfo, UnityClassID, PPtr, SubMesh, SubMeshArray, UnityObject, UnityTextureFormat, UnityTextureFilterMode, UnityTextureWrapMode, UnityColorSpace, UnityTextureSettings, UnityTexture2D, UnityMaterial, UnityShader, UnityTexEnv } from '../../../rust/pkg/index';
 import { GfxDevice, GfxBuffer, GfxBufferUsage, GfxInputState, GfxFormat, GfxInputLayout, GfxTexture, GfxSampler, GfxVertexBufferFrequency, GfxVertexAttributeDescriptor, GfxInputLayoutBufferDescriptor, GfxVertexBufferDescriptor, GfxWrapMode, GfxSamplerDescriptor, GfxMipFilterMode, GfxTexFilterMode, makeTextureDescriptor2D } from '../../gfx/platform/GfxPlatform';
 import { FormatCompFlags, getFormatCompByteSize, setFormatCompFlags } from '../../gfx/platform/GfxPlatformFormat';
-import { assert, assertExists, fallbackUndefined, nArray } from '../../util';
+import { assert, assertExists, fallbackUndefined, nArray, readString } from '../../util';
 import * as Geometry from '../../Geometry';
 import { vec3, vec4 } from 'gl-matrix';
 import { DataFetcher } from '../../DataFetcher';
@@ -13,6 +13,8 @@ import { GfxRenderCache } from '../../gfx/render/GfxRenderCache';
 import { Color, colorCopy, colorMult, colorNewCopy, colorNewFromRGBA, TransparentBlack, White } from '../../Color';
 import { TextureMapping } from '../../TextureHolder';
 import { fillColor, fillVec4, fillVec4v } from '../../gfx/helpers/UniformBufferHelpers';
+import * as LZMA from '../Compression/LZMA';
+import * as LZ4 from '../Compression/LZ4';
 
 export type RustModule = typeof import('../../../rust/pkg/index');
 
@@ -140,7 +142,7 @@ type ResType<T extends UnityAssetResourceType> =
 
 type CreateFunc<T> = (assetSystem: UnityAssetSystem, objData: AssetObjectData) => Promise<T | null>;
 
-class AssetFile {
+export class AssetFile {
     public unityObject: UnityObject[] = [];
     public unityObjectByPathID = new Map<number, UnityObject>();
     public assetInfo: AssetInfo;
@@ -174,6 +176,11 @@ class AssetFile {
     public initFull(wasm: RustModule, dataFetcher: DataFetcher): void {
         assert(this.waitForHeaderPromise === undefined);
         this.waitForHeaderPromise = this.initFullInternal(wasm, dataFetcher);
+    }
+
+    public initBuffer(wasm: RustModule, buffer: ArrayBufferSlice): void {
+        this.fullData = buffer;
+        this.doneLoadingHeader(wasm, this.fullData.createTypedArray(Uint8Array));
     }
 
     private async initPartialInternal(wasm: RustModule, dataFetcher: DataFetcher): Promise<void> {
@@ -330,6 +337,36 @@ class AssetFile {
     }
 }
 
+const enum CompressionFlags {
+    NONE = 0,
+    LZMA = 1,
+    LZ4 = 2,
+    LZ4HC = 3,
+    LZHAM = 4
+};
+
+const enum ArchiveFlags {
+    CompressionTypeMask = 0x3F,
+    BlocksAndDirectoryInfoCombined = 0x40,
+    BlocksInfoAtTheEnd = 0x80,
+    OldWebPluginCompatibility = 0x100,
+    BlockInfoNeedPaddingAtStart = 0x200,
+    UsesAssetBundleEncryption = 0x400
+};
+
+interface BlockInfo {
+    uncompressedSize: number,
+    compressedSize: number,
+    flags: number
+};
+
+interface DirectoryInfoFS {
+    offset: BigInt,
+    size: BigInt,
+    flags: number,
+    path: string
+}
+
 export class UnityAssetSystem {
     private assetFiles = new Map<string, AssetFile>();
     public renderCache: GfxRenderCache;
@@ -351,18 +388,161 @@ export class UnityAssetSystem {
     }
 
     public fetchAssetFile(filename: string, partial: boolean): AssetFile {
-        if (!this.assetFiles.has(filename)) {
-            const path = `${this.basePath}/${filename}`;
+        const stripped_filename = filename.toLowerCase().split('/').pop()!;
+        if (!this.assetFiles.has(stripped_filename)) {
+            const path = `${this.basePath}/${filename.toLowerCase()}`;
+            console.log(`new loading file ${path} to ${stripped_filename}`);
             const assetFile = new AssetFile(path);
             if (partial)
                 assetFile.initPartial(this.wasm, this.dataFetcher);
             else
                 assetFile.initFull(this.wasm, this.dataFetcher);
-            this.assetFiles.set(filename, assetFile);
+            this.assetFiles.set(stripped_filename, assetFile);
         }
 
-        const assetFile = this.assetFiles.get(filename)!;
+        const assetFile = this.assetFiles.get(stripped_filename)!;
         return assetFile;
+    }
+    
+    public fetchAssetBuffer(filename: string, buffer: ArrayBufferSlice): AssetFile {
+        const stripped_filename = filename.toLowerCase().split('/').pop()!;
+        if (!this.assetFiles.has(stripped_filename)) {
+            const path = `archive:${filename}`;
+            console.log(`new loading buffer ${path} to ${stripped_filename}`);
+            const assetFile = new AssetFile(path);
+            assetFile.initBuffer(this.wasm, buffer);
+            this.assetFiles.set(stripped_filename, assetFile);
+        }
+
+        const assetFile = this.assetFiles.get(stripped_filename)!;
+        return assetFile;
+    }
+    
+    public fetchBundleBuffer(buffer: ArrayBufferSlice): AssetFile[] {
+        const view = buffer.createDataView();
+        const version = view.getUint32(8);
+        if (version != 6 && version != 7) {
+            throw new Error(`unexpected version ${version}`);
+        }
+        const engineVersionStr = readString(buffer, 18, 12).split(/\D+/);
+        const engineVersion = [parseInt(engineVersionStr[0]), parseInt(engineVersionStr[1]), parseInt(engineVersionStr[2])];
+        console.log(`engine version ${engineVersion}`);
+        const compressedSize = view.getUint32(38);
+        const uncompressedSize = view.getUint32(42);
+        let flags = view.getUint32(46);
+        
+        // https://issuetracker.unity3d.com/issues/files-within-assetbundles-do-not-start-on-aligned-boundaries-breaking-patching-on-nintendo-switch
+        // Unity CN introduced encryption before the alignment fix was introduced.
+        // Unity CN used the same flag for the encryption as later on the alignment fix,
+        // so we have to check the version to determine the correct flag set.
+        if (
+            engineVersion[0] < 2020
+            || (engineVersion[0] == 2020 && (engineVersion[1] < 3 || (engineVersion[1] == 3 && engineVersion[2] < 34)))
+            || (engineVersion[0] == 2021 && (engineVersion[1] < 3 || (engineVersion[1] == 3 && engineVersion[2] < 2)))
+            || (engineVersion[0] == 2022 && (engineVersion[1] < 1 || (engineVersion[1] == 1 && engineVersion[2] < 1)))
+        ) {
+            flags |= (flags & 0x200) << 1;
+            flags &= ~0x200;
+        }
+        
+        if (flags & ArchiveFlags.UsesAssetBundleEncryption) {
+            throw new Error("Encryption unsupported");
+        }
+        
+        let blocksInfoOffset = 50;
+        if (version >= 7) {
+            blocksInfoOffset = 64;
+        }
+        else if (engineVersion[0] > 2019 || (engineVersion[0] == 2019 && engineVersion[1] >= 4)) {
+            // guess
+            blocksInfoOffset = 64;
+            for (let i = 50; i < 64; i++) {
+                if (view.getUint8(i) != 0) {
+                    blocksInfoOffset = 50;
+                    break;
+                }
+            }
+        }
+        
+        let blocksInfoBytes: ArrayBufferSlice;
+        let afterBlocksInfoOffset = blocksInfoOffset;
+        if (flags & ArchiveFlags.BlocksInfoAtTheEnd) {
+            blocksInfoBytes = buffer.subarray(buffer.byteLength - compressedSize);
+        }
+        else {
+            blocksInfoBytes = buffer.subarray(blocksInfoOffset, compressedSize);
+            afterBlocksInfoOffset += compressedSize;
+        }
+        
+        blocksInfoBytes = this.decompressData(blocksInfoBytes, uncompressedSize, flags);
+        const blocksInfoView = blocksInfoBytes.createDataView();
+        
+        const blocksInfoCount = blocksInfoView.getUint32(16);
+        let blocksInfo = Array<BlockInfo>(blocksInfoCount);
+        for (let i = 0; i < blocksInfoCount; i++) {
+            blocksInfo[i] = {
+                uncompressedSize: blocksInfoView.getUint32(20+i*10),
+                compressedSize: blocksInfoView.getUint32(24+i*10),
+                flags: blocksInfoView.getUint16(28+i*10)
+            };
+        }
+        
+        const nodesCount = blocksInfoView.getUint32(20+blocksInfoCount*10);
+        let offset = 24+blocksInfoCount*10;
+        let files = Array<DirectoryInfoFS>(nodesCount);
+        for (let i = 0; i < nodesCount; i++) {
+            const path = readString(blocksInfoBytes, offset+20);
+            files[i] = {
+                offset: blocksInfoView.getBigUint64(offset),
+                size: blocksInfoView.getBigUint64(offset+8),
+                flags: blocksInfoView.getUint32(offset+16),
+                path: path
+            };
+            offset += 20+path.length+1;
+        }
+        
+        let blockPointer = afterBlocksInfoOffset;
+        if (flags & ArchiveFlags.BlockInfoNeedPaddingAtStart) {
+            // align
+            blockPointer += (16-blockPointer)%16;
+        }
+        let totalUncompressedSize = 0;
+        for (let i = 0; i < blocksInfo.length; i++) {
+            totalUncompressedSize += blocksInfo[i].uncompressedSize;
+        }
+        let blocksData = new ArrayBufferSlice(new ArrayBuffer(totalUncompressedSize));
+        let blocksArray = new Uint8Array(blocksData.arrayBuffer, 0, blocksData.byteLength);
+        let blocksDataOffset = 0;
+        for (let i = 0; i < blocksInfo.length; i++) {
+            let data = this.decompressData(buffer.subarray(blockPointer, blocksInfo[i].compressedSize), blocksInfo[i].uncompressedSize, blocksInfo[i].flags);
+            blocksArray.set(new Uint8Array(data.arrayBuffer), blocksDataOffset);
+            blockPointer += blocksInfo[i].compressedSize;
+            blocksDataOffset += data.byteLength;
+        }
+        
+        //blocksData = blocksData.subarray(blocksInfoView.byteLength);
+        
+        let assetFiles = Array<AssetFile>();
+        for (let i = 0; i < files.length; i++) {
+            if (!files[i].path.endsWith(".resource")) {
+                assetFiles.push(this.fetchAssetBuffer(files[i].path, blocksData.subarray(Number(files[i].offset), Number(files[i].size))));
+            }
+        }
+        return assetFiles;
+    }
+    
+    private decompressData(compressedData: ArrayBufferSlice, uncompressedSize: number, flags: number): ArrayBufferSlice {
+        switch (flags & ArchiveFlags.CompressionTypeMask) {
+        case CompressionFlags.LZMA:
+            return new ArrayBufferSlice(LZMA.decompress(compressedData.slice(5), LZMA.decodeLZMAProperties(compressedData), uncompressedSize));
+        case CompressionFlags.LZ4:
+        case CompressionFlags.LZ4HC:
+            return LZ4.decompress(compressedData, uncompressedSize);
+        case CompressionFlags.LZHAM:
+            throw new Error("LZHAM decompression not implemented");
+        default:
+            return compressedData;
+        }
     }
 
     public async fetchPPtr(location: AssetLocation, pptr: PPtr): Promise<AssetObjectData> {
@@ -714,7 +894,7 @@ export class UnityMaterialData {
         if (idx >= 0) {
             return fillVec4v(d, offs, this.textureST[idx]);
         } else {
-            return fillVec4(d, offs, 0);
+            return fillVec4v(d, offs, vec4.fromValues(1, 1, 0, 0));
         }
     }
 
@@ -728,7 +908,7 @@ export class UnityMaterialData {
         if (idx >= 0) {
             return fillColor(d, offs, this.color[idx]);
         } else {
-            return fillColor(d, offs, TransparentBlack);
+            return fillColor(d, offs, White);
         }
     }
 
