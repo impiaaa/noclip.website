@@ -3,7 +3,7 @@
 use wasm_bindgen::prelude::wasm_bindgen;
 use crate::unity::asset::*;
 use crate::unity::reader::*;
-use crate::unity::version::UnityVersion;
+use crate::unity::version::*;
 use crate::unity::bitstream::BitStream;
 
 // empty type for when we just wanna move the read stream along
@@ -406,6 +406,20 @@ impl SubMeshArray {
     }
 }
 
+pub struct BoneWeights4 {
+    pub weight: [f32; 4],
+    pub index: [i32; 4]
+}
+
+impl Deserialize for BoneWeights4 {
+    fn deserialize(reader: &mut AssetReader, asset: &AssetInfo) -> Result<Self> {
+        Ok(BoneWeights4 {
+            weight: [reader.read_f32()?, reader.read_f32()?, reader.read_f32()?, reader.read_f32()?],
+            index: [reader.read_i32()?, reader.read_i32()?, reader.read_i32()?, reader.read_i32()?],
+        })
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub enum MeshCompression {
     Off,
@@ -552,38 +566,76 @@ impl Mesh {
 impl Deserialize for Mesh {
     fn deserialize(reader: &mut AssetReader, asset: &AssetInfo) -> Result<Self> {
         let name = reader.read_char_array()?;
-        let unity2019 = UnityVersion { major: 2019, ..Default::default() };
+        let unity_version = asset.metadata.unity_version;
         // TODO support older versions
-        if asset.metadata.unity_version < unity2019 {
+        if unity_version < (UnityVersion { major: 3, minor: 5, ..Default::default() }) {
             return Err(AssetReaderError::UnsupportedUnityVersion(asset.metadata.unity_version));
         }
 
         let submeshes = SubMesh::deserialize_array(reader, asset)?;
-        let _shapes = Shape::deserialize(reader, asset)?;
-        let _bind_pose = Mat4x4f::deserialize_array(reader, asset)?;
-        let _bone_name_hashes = reader.read_u32_array()?;
-        let _root_bone_name_hash = reader.read_u32()?;
-        let _bones_aabb = AABB::deserialize_array(reader, asset)?;
-        let _variable_bone_count_weights = reader.read_u32_array()?;
+        if unity_version >= (UnityVersion { major: 4, minor: 1, ..Default::default() }) {
+            let _shapes = Shape::deserialize(reader, asset)?;
+        }
+        if unity_version >= (UnityVersion { major: 4, minor: 3, ..Default::default() }) {
+            let _bind_pose = Mat4x4f::deserialize_array(reader, asset)?;
+            let _bone_name_hashes = reader.read_u32_array()?;
+            let _root_bone_name_hash = reader.read_u32()?;
+        }
+        if unity_version >= (UnityVersion { major: 2019, ..Default::default() }) {
+            let _bones_aabb = AABB::deserialize_array(reader, asset)?;
+            let _variable_bone_count_weights = reader.read_u32_array()?;
+        }
+        
         let mesh_compression = MeshCompression::deserialize(reader, asset)?;
-        let is_readable = reader.read_bool()?;
-        let keep_vertices = reader.read_bool()?;
-        let keep_indices = reader.read_bool()?;
+        if unity_version < (UnityVersion { major: 5, ..Default::default() }) {
+            let _stream_compression = reader.read_u8()?;
+        }
+        let is_4 = unity_version >= (UnityVersion { major: 4, ..Default::default() });
+        let is_readable = if is_4 { reader.read_bool()? } else { true };
+        let keep_vertices = if is_4 { reader.read_bool()? } else { true };
+        let keep_indices = if is_4 { reader.read_bool()? } else { true };
         reader.align()?;
-        let index_format = if reader.read_i32()? == 0 { IndexFormat::UInt16 } else { IndexFormat::UInt32 };
+        
+        let has_idx_fmt = 
+                unity_version >= (UnityVersion { major: 2017, minor: 4, ..Default::default() })
+                || unity_version >= (UnityVersion { major: 2017, minor: 3, build: 1, version_type: VersionType::Alpha, ..Default::default() })
+                && unity_version.version_type == VersionType::Patch
+                || unity_version >= (UnityVersion { major: 2017, minor: 3, version_type: VersionType::Alpha, ..Default::default() })
+                && mesh_compression == MeshCompression::Off
+            ;
+        let index_format = if !has_idx_fmt || reader.read_i32()? == 0 { IndexFormat::UInt16 } else { IndexFormat::UInt32 };
+        
         let raw_index_buffer = reader.read_byte_array()?;
         reader.align()?;
+        
+        if unity_version < (UnityVersion { major: 2018, minor: 2, ..Default::default() }) {
+            let _skin = BoneWeights4::deserialize_array(reader, asset)?;
+        }
+        
+        if unity_version <= (UnityVersion { major: 4, minor: 2, ..Default::default() }) {
+            let _bind_pose = Mat4x4f::deserialize_array(reader, asset)?;
+        }
+        
         let vertex_data = VertexData::deserialize(reader, asset)?;
         reader.align()?;
+        
         let compressed_mesh = CompressedMesh::deserialize(reader, asset)?;
+        
         let local_aabb = AABB::deserialize(reader, asset)?;
+        
         let mesh_usage_flags = reader.read_i32()?;
-        let baked_convex_collision_mesh = reader.read_byte_array()?;
+        let is_5 = unity_version >= (UnityVersion { major: 5, ..Default::default() });
+        let baked_convex_collision_mesh = if is_5 { reader.read_byte_array()? } else { Vec::new() };
         reader.align()?;
-        let baked_triangle_collision_mesh = reader.read_byte_array()?;
+        let baked_triangle_collision_mesh = if is_5 { reader.read_byte_array()? } else { Vec::new() };
         reader.align()?;
-        let hash_metrics = [reader.read_f32()?, reader.read_f32()?];
-        let streaming_info = UnityStreamingInfo::deserialize(reader, asset)?;
+        let hash_metrics = if unity_version >= (UnityVersion { major: 2018, minor: 2, ..Default::default() }) { [reader.read_f32()?, reader.read_f32()?] } else { [0.0, 0.0] };
+        let streaming_info = if unity_version >= (UnityVersion { major: 2018, minor: 3, ..Default::default() }) {
+            UnityStreamingInfo::deserialize(reader, asset)?
+        }
+        else {
+            UnityStreamingInfo { size: 0, offset: 0, path: "".to_string() }
+        };
 
         Ok(Mesh {
             name,
