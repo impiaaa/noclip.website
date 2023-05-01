@@ -515,16 +515,16 @@ export class UnityAssetSystem {
         let blocksDataOffset = 0;
         for (let i = 0; i < blocksInfo.length; i++) {
             let data = this.decompressData(buffer.subarray(blockPointer, blocksInfo[i].compressedSize), blocksInfo[i].uncompressedSize, blocksInfo[i].flags);
-            blocksArray.set(new Uint8Array(data.arrayBuffer), blocksDataOffset);
+            blocksArray.set(data.subarray(0, blocksInfo[i].uncompressedSize).createTypedArray(Uint8Array), blocksDataOffset);
             blockPointer += blocksInfo[i].compressedSize;
-            blocksDataOffset += data.byteLength;
+            blocksDataOffset += blocksInfo[i].uncompressedSize;
         }
         
         //blocksData = blocksData.subarray(blocksInfoView.byteLength);
         
         let assetFiles = Array<AssetFile>();
         for (let i = 0; i < files.length; i++) {
-            if (!files[i].path.endsWith(".resource")) {
+            if (!files[i].path.endsWith(".resource") && !files[i].path.endsWith(".resS")) {
                 assetFiles.push(this.fetchAssetBuffer(files[i].path, blocksData.subarray(Number(files[i].offset), Number(files[i].size))));
             }
         }

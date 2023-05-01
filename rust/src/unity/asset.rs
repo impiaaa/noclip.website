@@ -1,7 +1,6 @@
-
-use wasm_bindgen::prelude::wasm_bindgen;
+use crate::unity::reader::{AssetReader, Deserialize, Result as ReaderResult};
 use crate::unity::version::UnityVersion;
-use crate::unity::reader::{ AssetReader, Deserialize, Result as ReaderResult };
+use wasm_bindgen::prelude::wasm_bindgen;
 
 #[wasm_bindgen]
 #[derive(Debug)]
@@ -38,7 +37,8 @@ impl UnityObjectArray {
 #[wasm_bindgen]
 impl AssetInfo {
     pub fn deserialize(data: Vec<u8>) -> Result<AssetInfo, String> {
-        AssetReader::new(data).read_asset_info()
+        AssetReader::new(data)
+            .read_asset_info()
             .map_err(|err| format!("{:?}", err))
     }
 
@@ -161,7 +161,10 @@ pub struct UnityStreamingInfo {
 
 impl Deserialize for UnityStreamingInfo {
     fn deserialize(reader: &mut AssetReader, asset: &AssetInfo) -> ReaderResult<Self> {
-        let unity2020 = UnityVersion { major: 2020, ..Default::default() };
+        let unity2020 = UnityVersion {
+            major: 2020,
+            ..Default::default()
+        };
         let offset = if asset.metadata.unity_version > unity2020 {
             reader.read_i64()? as u32
         } else {
@@ -188,7 +191,10 @@ impl Deserialize for PPtr {
     fn deserialize(reader: &mut AssetReader, _asset: &AssetInfo) -> ReaderResult<Self> {
         let file_index = reader.read_u32()?;
         let path_id = reader.read_i64()? as i32;
-        Ok(PPtr { file_index, path_id })
+        Ok(PPtr {
+            file_index,
+            path_id,
+        })
     }
 }
 
@@ -225,7 +231,7 @@ impl<TKey: Deserialize, TVal: Deserialize> Deserialize for Map<TKey, TVal> {
             let val = TVal::deserialize(reader, asset)?;
             vals.push(val);
         }
-        Ok(Map{ keys, vals })
+        Ok(Map { keys, vals })
     }
 }
 
@@ -238,5 +244,11 @@ impl Deserialize for String {
 impl Deserialize for f32 {
     fn deserialize(reader: &mut AssetReader, _asset: &AssetInfo) -> ReaderResult<f32> {
         reader.read_f32()
+    }
+}
+
+impl Deserialize for i32 {
+    fn deserialize(reader: &mut AssetReader, _asset: &AssetInfo) -> ReaderResult<i32> {
+        reader.read_i32()
     }
 }

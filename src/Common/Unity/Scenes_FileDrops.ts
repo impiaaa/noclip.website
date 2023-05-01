@@ -126,7 +126,7 @@ class UnityRenderer implements Viewer.SceneGfx {
     }
 
     private prepareToRender(device: GfxDevice, viewerInput: Viewer.ViewerRenderInput): void {
-        viewerInput.camera.setClipPlanes(0.05, 1000);
+        viewerInput.camera.setClipPlanes(0.3, 1000);
         this.runtime.update();
 
         const template = this.renderHelper.pushTemplateRenderInst();

@@ -201,6 +201,15 @@ impl AssetReader {
         }
     }
 
+    pub fn read_u16_array(&mut self) -> Result<Vec<u16>> {
+        let count = self.read_u32()? as usize;
+        let mut xs: Vec<u16> = Vec::with_capacity(count);
+        for _ in 0..count {
+            xs.push(self.read_u16()?);
+        }
+        Ok(xs)
+    }
+
     pub fn read_u32_array(&mut self) -> Result<Vec<u32>> {
         let count = self.read_u32()? as usize;
         let mut xs: Vec<u32> = Vec::with_capacity(count);

@@ -64,13 +64,15 @@ export class Transform extends UnityComponent {
     }
 
     public override spawn(runtime: UnityRuntime): void {
-        super.spawn(runtime);
-        this.parent = runtime.findComponentByPPtr(this.wasmObj.parent);
-        this.children = loadWasmBindgenArray(this.wasmObj.get_children()).map((pptr) => {
-            return assertExists(runtime.findComponentByPPtr<Transform>(pptr));
-        });
-        this.wasmObj.free();
-        this.wasmObj = null!;
+        if (this.wasmObj) {
+            super.spawn(runtime);
+            this.parent = runtime.findComponentByPPtr(this.wasmObj.parent);
+            this.children = loadWasmBindgenArray(this.wasmObj.get_children()).map((pptr) => {
+                return assertExists(runtime.findComponentByPPtr<Transform>(pptr));
+            });
+            this.wasmObj.free();
+            this.wasmObj = null!;
+        }
     }
 
     public updateModelMatrix(): void {
